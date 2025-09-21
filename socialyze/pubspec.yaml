@@ -19,7 +19,8 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 version: 1.0.0+1
 
 environment:
-  sdk: ^3.9.0
+  sdk: ">=3.3.0 <4.0.0"
+
 
 # Dependencies specify other packages that your package needs in order to work.
 # To automatically upgrade your package dependencies to the latest versions
@@ -30,10 +31,17 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-
-  # The following adds the Cupertino Icons font to your application.
-  # Use with the CupertinoIcons class for iOS style icons.
-  cupertino_icons: ^1.0.8
+  flutter_riverpod: ^2.5.1
+  media_kit: any
+  media_kit_video: any
+  # one of these per platform:
+  media_kit_libs_windows_video: any
+  # media_kit_libs_macos_video: any
+  # media_kit_libs_linux: any
+  desktop_drop: any            # drag & drop
+  drift: any                   # ORM for SQLite
+  sqlite3_flutter_libs: any
+  path_provider: any
 
 dev_dependencies:
   flutter_test:
@@ -44,7 +52,7 @@ dev_dependencies:
   # activated in the `analysis_options.yaml` file located at the root of your
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
-  flutter_lints: ^5.0.0
+  flutter_lints: ^6.0.0
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
