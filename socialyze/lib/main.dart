@@ -63,7 +63,7 @@ extension on Protocol {
 const _copySentinel = Object();
 
 class SessionState {
-  const SessionState({
+  SessionState({
     required this.protocol,
     this.isRecording = false,
     this.startedAt,
@@ -117,7 +117,7 @@ class SessionState {
 
 class SessionController extends StateNotifier<SessionState> {
   SessionController()
-      : super(const SessionState(protocol: Protocol.socialInteraction));
+      : super(SessionState(protocol: Protocol.socialInteraction));
 
   void setProtocol(Protocol protocol) {
     state = state.copyWith(protocol: protocol);
@@ -781,7 +781,7 @@ List<_KeyBinding> _buildKeyBindings(Protocol protocol) {
   ];
 
   const chambers = [Chamber.empty, Chamber.middle, Chamber.stranger];
-  const keyLabels = {
+  final keyLabels = {
     LogicalKeyboardKey.numpad1: 'Numpad 1',
     LogicalKeyboardKey.numpad2: 'Numpad 2',
     LogicalKeyboardKey.numpad3: 'Numpad 3',
