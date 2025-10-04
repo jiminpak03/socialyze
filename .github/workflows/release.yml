@@ -1,0 +1,96 @@
+name: SociaLyze Desktop Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*" # e.g. v0.1.0
+
+permissions:
+  contents: write # needed to create/upload release assets
+
+jobs:
+  build-desktop:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            build: windows
+            zip: SociaLyze_Windows.zip
+            out_path: build/windows/x64/runner/Release
+          - os: macos-latest
+            build: macos
+            zip: SociaLyze_macOS.zip
+            out_path: build/macos/Build/Products/Release
+          - os: ubuntu-latest
+            build: linux
+            zip: SociaLyze_Linux.zip
+            out_path: build/linux/x64/release/bundle
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          # If you want to pin: flutter-version: "3.22.x"
+
+      # Linux needs native build deps for Flutter desktop
+      - name: Install Linux build dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      # Enable only the relevant desktop target
+      - name: Enable desktop target
+        run: |
+          case "${{ matrix.build }}" in
+            windows) flutter config --enable-windows-desktop ;;
+            macos)   flutter config --enable-macos-desktop ;;
+            linux)   flutter config --enable-linux-desktop ;;
+          esac
+
+      - name: Build
+        run: flutter build ${{ matrix.build }} --release
+
+      # Zip artifacts per platform
+      - name: Zip build (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Compress-Archive -Path "${{ matrix.out_path }}\*" -DestinationPath "${{ matrix.zip }}"
+
+      - name: Zip build (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          cd "${{ matrix.out_path }}"
+          # Your .app will be named after your app (from pubspec). Adjust if different:
+          zip -r "../../${{ matrix.zip }}" "SociaLyze.app"
+
+      - name: Zip build (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cd "${{ matrix.out_path }}/.."
+          # 'bundle' directory contains the executable and libs
+          zip -r "../../${{ matrix.zip }}" "bundle"
+
+      - name: Upload artifact (CI)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.zip }}
+          path: ${{ matrix.zip }}
+
+      - name: Attach to GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: ${{ matrix.zip }}
