@@ -62,6 +62,64 @@ extension on Protocol {
 
 const _copySentinel = Object();
 
+const List<String> _mouseIds = ['Mouse A', 'Mouse B', 'Mouse C'];
+const List<Chamber> _chamberOrder = [
+  Chamber.empty,
+  Chamber.middle,
+  Chamber.stranger,
+];
+
+Map<String, Map<Chamber, LogicalKeyboardKey>> _defaultKeyMap() {
+  const keyGrid = <List<LogicalKeyboardKey>>[
+    [
+      LogicalKeyboardKey.numpad7,
+      LogicalKeyboardKey.numpad4,
+      LogicalKeyboardKey.numpad1,
+    ],
+    [
+      LogicalKeyboardKey.numpad8,
+      LogicalKeyboardKey.numpad5,
+      LogicalKeyboardKey.numpad2,
+    ],
+    [
+      LogicalKeyboardKey.numpad9,
+      LogicalKeyboardKey.numpad6,
+      LogicalKeyboardKey.numpad3,
+    ],
+  ];
+
+  final map = <String, Map<Chamber, LogicalKeyboardKey>>{};
+  for (var mouseIndex = 0; mouseIndex < _mouseIds.length; mouseIndex++) {
+    final chambers = <Chamber, LogicalKeyboardKey>{};
+    for (var chamberIndex = 0;
+        chamberIndex < _chamberOrder.length;
+        chamberIndex++) {
+      chambers[_chamberOrder[chamberIndex]] = keyGrid[mouseIndex][chamberIndex];
+    }
+    map[_mouseIds[mouseIndex]] = chambers;
+  }
+  return map;
+}
+
+Map<String, Map<Chamber, LogicalKeyboardKey>> _freezeKeyMap(
+  Map<String, Map<Chamber, LogicalKeyboardKey>>? map,
+) {
+  final source = map ?? _defaultKeyMap();
+  return Map.unmodifiable({
+    for (final entry in source.entries)
+      entry.key: Map<Chamber, LogicalKeyboardKey>.unmodifiable(entry.value),
+  });
+}
+
+Map<String, Map<Chamber, LogicalKeyboardKey>> _cloneKeyMap(
+  Map<String, Map<Chamber, LogicalKeyboardKey>> map,
+) {
+  return {
+    for (final entry in map.entries)
+      entry.key: Map<Chamber, LogicalKeyboardKey>.from(entry.value),
+  };
+}
+
 class SessionState {
   SessionState({
     required this.protocol,
@@ -71,9 +129,11 @@ class SessionState {
     List<SessionEvent>? events,
     this.videoPath,
     this.summary,
-  }) : events = events == null
+    Map<String, Map<Chamber, LogicalKeyboardKey>>? keyMap,
+  })  : events = events == null
             ? const []
-            : List<SessionEvent>.unmodifiable(events);
+            : List<SessionEvent>.unmodifiable(events),
+        keyMap = _freezeKeyMap(keyMap);
 
   final Protocol protocol;
   final bool isRecording;
@@ -82,6 +142,7 @@ class SessionState {
   final List<SessionEvent> events;
   final String? videoPath;
   final SessionSummary? summary;
+  final Map<String, Map<Chamber, LogicalKeyboardKey>> keyMap;
 
   SessionState copyWith({
     Protocol? protocol,
@@ -92,6 +153,7 @@ class SessionState {
     Object? videoPath = _copySentinel,
     Object? summary = _copySentinel,
     bool clearSummary = false,
+    Map<String, Map<Chamber, LogicalKeyboardKey>>? keyMap,
   }) {
     return SessionState(
       protocol: protocol ?? this.protocol,
@@ -111,6 +173,7 @@ class SessionState {
           : summary == _copySentinel
               ? this.summary
               : summary as SessionSummary?,
+      keyMap: keyMap ?? this.keyMap,
     );
   }
 }
@@ -173,6 +236,7 @@ class SessionController extends StateNotifier<SessionState> {
     state = SessionState(
       protocol: state.protocol,
       videoPath: state.videoPath,
+      keyMap: state.keyMap,
     );
   }
 
@@ -201,6 +265,12 @@ class SessionController extends StateNotifier<SessionState> {
       return null;
     }
     return generateSessionCsv(summary);
+  }
+
+  void setKeyBindings(
+    Map<String, Map<Chamber, LogicalKeyboardKey>> keyMap,
+  ) {
+    state = state.copyWith(keyMap: keyMap);
   }
 }
 
@@ -234,7 +304,7 @@ class _SessionHomeState extends ConsumerState<SessionHome> {
   Widget build(BuildContext context) {
     final session = ref.watch(sessionControllerProvider);
     final controller = ref.read(sessionControllerProvider.notifier);
-    final bindings = _buildKeyBindings(session.protocol);
+    final bindings = _buildKeyBindings(session);
     final bindingLookup = {
       for (final binding in bindings) binding.key: binding,
     };
@@ -360,6 +430,21 @@ class _SessionToolbar extends StatelessWidget {
           onPressed: session.events.isEmpty && !session.isRecording
               ? null
               : controller.clearSession,
+        ),
+        OutlinedButton.icon(
+          icon: const Icon(Icons.keyboard),
+          label: const Text('Remap shortcuts'),
+          onPressed: session.isRecording
+              ? null
+              : () {
+                  showDialog<void>(
+                    context: context,
+                    builder: (context) => _RemapKeysDialog(
+                      session: session,
+                      controller: controller,
+                    ),
+                  );
+                },
         ),
         ElevatedButton.icon(
           icon: const Icon(Icons.table_view),
@@ -726,6 +811,281 @@ class _KeyboardLegend extends StatelessWidget {
   }
 }
 
+class _RemapKeysDialog extends StatefulWidget {
+  const _RemapKeysDialog({required this.session, required this.controller});
+
+  final SessionState session;
+  final SessionController controller;
+
+  @override
+  State<_RemapKeysDialog> createState() => _RemapKeysDialogState();
+}
+
+class _RemapKeysDialogState extends State<_RemapKeysDialog> {
+  late Map<String, Map<Chamber, LogicalKeyboardKey>> _workingMap;
+  String? _listeningMouseId;
+  Chamber? _listeningChamber;
+  String? _error;
+  final FocusNode _focusNode = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    _workingMap = _cloneKeyMap(widget.session.keyMap);
+  }
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  bool get _isListening => _listeningMouseId != null && _listeningChamber != null;
+
+  void _startListening(String mouseId, Chamber chamber) {
+    setState(() {
+      _listeningMouseId = mouseId;
+      _listeningChamber = chamber;
+      _error = null;
+    });
+    _focusNode.requestFocus();
+  }
+
+  void _stopListening() {
+    if (!_isListening && _error == null) {
+      return;
+    }
+    setState(() {
+      _listeningMouseId = null;
+      _listeningChamber = null;
+      _error = null;
+    });
+  }
+
+  _BindingTarget? _findConflict(
+    LogicalKeyboardKey key,
+    _BindingTarget target,
+  ) {
+    for (final entry in _workingMap.entries) {
+      for (final chamberEntry in entry.value.entries) {
+        if (entry.key == target.mouseId && chamberEntry.key == target.chamber) {
+          continue;
+        }
+        if (chamberEntry.value == key) {
+          return _BindingTarget(entry.key, chamberEntry.key);
+        }
+      }
+    }
+    return null;
+  }
+
+  void _handleKey(RawKeyEvent event) {
+    if (!_isListening || event is! RawKeyDownEvent) {
+      return;
+    }
+
+    final key = event.logicalKey;
+
+    if (key == LogicalKeyboardKey.escape) {
+      _stopListening();
+      return;
+    }
+
+    if (event.isControlPressed ||
+        event.isMetaPressed ||
+        event.isAltPressed ||
+        _isModifierKey(key)) {
+      return;
+    }
+
+    final target = _BindingTarget(_listeningMouseId!, _listeningChamber!);
+    final conflict = _findConflict(key, target);
+    if (conflict != null) {
+      setState(() {
+        _error =
+            'Already assigned to ${conflict.mouseId} → ${_chamberLabel(widget.session.protocol, conflict.chamber)}';
+      });
+      return;
+    }
+
+    final mouseBindings = _workingMap[target.mouseId];
+    if (mouseBindings == null) {
+      _stopListening();
+      return;
+    }
+
+    setState(() {
+      mouseBindings[target.chamber] = key;
+      _listeningMouseId = null;
+      _listeningChamber = null;
+      _error = null;
+    });
+  }
+
+  bool _isListeningFor(String mouseId, Chamber chamber) {
+    return _listeningMouseId == mouseId && _listeningChamber == chamber;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return AlertDialog(
+      title: const Text('Remap shortcuts'),
+      content: RawKeyboardListener(
+        focusNode: _focusNode,
+        autofocus: true,
+        onKey: _handleKey,
+        child: SizedBox(
+          width: 520,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Assign the key you want to use for each mouse and chamber. Keys must be unique.',
+                style: theme.textTheme.bodyMedium,
+              ),
+              if (_isListening) ...[
+                const SizedBox(height: 12),
+                Text(
+                  'Listening… press a key to update the shortcut, or press Esc to cancel.',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.primary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+              if (_error != null) ...[
+                const SizedBox(height: 12),
+                Text(
+                  _error!,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.error,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 16),
+              SizedBox(
+                height: 280,
+                child: ListView(
+                  shrinkWrap: true,
+                  children: [
+                    for (final mouseId in _mouseIds)
+                      if (_workingMap.containsKey(mouseId))
+                        _KeyRemapSection(
+                          mouseId: mouseId,
+                          protocol: widget.session.protocol,
+                          entries: _workingMap[mouseId]!,
+                          onTap: _startListening,
+                          onCancel: _stopListening,
+                          isListening: _isListeningFor,
+                        ),
+                    for (final entry in _workingMap.entries)
+                      if (!_mouseIds.contains(entry.key))
+                        _KeyRemapSection(
+                          mouseId: entry.key,
+                          protocol: widget.session.protocol,
+                          entries: entry.value,
+                          onTap: _startListening,
+                          onCancel: _stopListening,
+                          isListening: _isListeningFor,
+                        ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () {
+            _stopListening();
+            setState(() {
+              _workingMap = _defaultKeyMap();
+            });
+          },
+          child: const Text('Reset to defaults'),
+        ),
+        FilledButton(
+          onPressed: () {
+            widget.controller.setKeyBindings(_workingMap);
+            Navigator.of(context).pop();
+          },
+          child: const Text('Save'),
+        ),
+      ],
+    );
+  }
+}
+
+class _KeyRemapSection extends StatelessWidget {
+  const _KeyRemapSection({
+    required this.mouseId,
+    required this.protocol,
+    required this.entries,
+    required this.onTap,
+    required this.onCancel,
+    required this.isListening,
+  });
+
+  final String mouseId;
+  final Protocol protocol;
+  final Map<Chamber, LogicalKeyboardKey> entries;
+  final void Function(String mouseId, Chamber chamber) onTap;
+  final VoidCallback onCancel;
+  final bool Function(String mouseId, Chamber chamber) isListening;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            mouseId,
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 8),
+          ..._chamberOrder.map((chamber) {
+            final key = entries[chamber];
+            if (key == null) {
+              return const SizedBox.shrink();
+            }
+            final listening = isListening(mouseId, chamber);
+            return ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text(_chamberLabel(protocol, chamber)),
+              subtitle: Text('Shortcut: ${_describeKey(key)}'),
+              trailing: OutlinedButton(
+                onPressed:
+                    listening ? onCancel : () => onTap(mouseId, chamber),
+                child: Text(listening ? 'Cancel' : 'Change'),
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+}
+
+class _BindingTarget {
+  const _BindingTarget(this.mouseId, this.chamber);
+
+  final String mouseId;
+  final Chamber chamber;
+}
+
 class _EmptyState extends StatelessWidget {
   const _EmptyState({required this.message});
 
@@ -760,56 +1120,78 @@ class _KeyBinding {
   final Chamber chamber;
 }
 
-List<_KeyBinding> _buildKeyBindings(Protocol protocol) {
-  const mouseIds = ['Mouse A', 'Mouse B', 'Mouse C'];
-  const keyGrid = <List<LogicalKeyboardKey>>[
-    [
-      LogicalKeyboardKey.numpad7,
-      LogicalKeyboardKey.numpad4,
-      LogicalKeyboardKey.numpad1,
-    ],
-    [
-      LogicalKeyboardKey.numpad8,
-      LogicalKeyboardKey.numpad5,
-      LogicalKeyboardKey.numpad2,
-    ],
-    [
-      LogicalKeyboardKey.numpad9,
-      LogicalKeyboardKey.numpad6,
-      LogicalKeyboardKey.numpad3,
-    ],
-  ];
-
-  const chambers = [Chamber.empty, Chamber.middle, Chamber.stranger];
-  final keyLabels = {
-    LogicalKeyboardKey.numpad1: 'Numpad 1',
-    LogicalKeyboardKey.numpad2: 'Numpad 2',
-    LogicalKeyboardKey.numpad3: 'Numpad 3',
-    LogicalKeyboardKey.numpad4: 'Numpad 4',
-    LogicalKeyboardKey.numpad5: 'Numpad 5',
-    LogicalKeyboardKey.numpad6: 'Numpad 6',
-    LogicalKeyboardKey.numpad7: 'Numpad 7',
-    LogicalKeyboardKey.numpad8: 'Numpad 8',
-    LogicalKeyboardKey.numpad9: 'Numpad 9',
-  };
-
+List<_KeyBinding> _buildKeyBindings(SessionState session) {
   final bindings = <_KeyBinding>[];
-  for (var mouseIndex = 0; mouseIndex < mouseIds.length; mouseIndex++) {
-    final keys = keyGrid[mouseIndex];
-    for (var chamberIndex = 0; chamberIndex < chambers.length; chamberIndex++) {
-      final key = keys[chamberIndex];
+  final seen = <String>{};
+
+  void addBindingsFor(String mouseId, Map<Chamber, LogicalKeyboardKey>? map) {
+    if (map == null) {
+      return;
+    }
+    for (final chamber in _chamberOrder) {
+      final key = map[chamber];
+      if (key == null) {
+        continue;
+      }
       bindings.add(
         _KeyBinding(
           key: key,
-          keyLabel: keyLabels[key]!,
-          mouseId: mouseIds[mouseIndex],
-          chamber: chambers[chamberIndex],
+          keyLabel: _describeKey(key),
+          mouseId: mouseId,
+          chamber: chamber,
         ),
       );
     }
+    seen.add(mouseId);
+  }
+
+  for (final mouseId in _mouseIds) {
+    addBindingsFor(mouseId, session.keyMap[mouseId]);
+  }
+
+  for (final entry in session.keyMap.entries) {
+    if (seen.contains(entry.key)) {
+      continue;
+    }
+    addBindingsFor(entry.key, entry.value);
   }
 
   return bindings;
+}
+
+String _describeKey(LogicalKeyboardKey key) {
+  final debugName = key.debugName;
+  if (debugName != null && debugName.isNotEmpty) {
+    if (debugName.startsWith('Key ') && debugName.length == 5) {
+      return debugName.substring(4);
+    }
+    if (debugName.startsWith('Digit ') && debugName.length == 7) {
+      return debugName.substring(6);
+    }
+    return debugName;
+  }
+
+  final label = key.keyLabel;
+  if (label.isNotEmpty) {
+    return label.length == 1 ? label.toUpperCase() : label;
+  }
+
+  return 'Key ${key.keyId.toRadixString(16)}';
+}
+
+bool _isModifierKey(LogicalKeyboardKey key) {
+  return key == LogicalKeyboardKey.shiftLeft ||
+      key == LogicalKeyboardKey.shiftRight ||
+      key == LogicalKeyboardKey.controlLeft ||
+      key == LogicalKeyboardKey.controlRight ||
+      key == LogicalKeyboardKey.altLeft ||
+      key == LogicalKeyboardKey.altRight ||
+      key == LogicalKeyboardKey.metaLeft ||
+      key == LogicalKeyboardKey.metaRight ||
+      key == LogicalKeyboardKey.capsLock ||
+      key == LogicalKeyboardKey.numLock ||
+      key == LogicalKeyboardKey.scrollLock ||
+      key == LogicalKeyboardKey.fn;
 }
 
 String _chamberLabel(Protocol protocol, Chamber chamber) {
