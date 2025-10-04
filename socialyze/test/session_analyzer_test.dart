@@ -59,7 +59,7 @@ void main() {
       );
       expect(
         summary.mouseSummaries['B']?.dwellTime(Chamber.stranger),
-        const Duration.zero,
+        Duration.zero,
       );
     });
 
