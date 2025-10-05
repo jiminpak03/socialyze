@@ -98,16 +98,24 @@ jobs:
         run: |
           SRC="${GITHUB_WORKSPACE}/${{ env.PROJECT_DIR }}/${{ matrix.out_path }}"
           DST="${GITHUB_WORKSPACE}/${{ env.PROJECT_DIR }}/${{ matrix.zip }}"
-          cd "$SRC"
-          APP_BUNDLE="$(ls -1 *.app | head -n 1 || true)"
-          if [ -z "$APP_BUNDLE" ]; then
+          echo "Looking for .app in: $SRC"
+          ls -la "$SRC" || true
+
+          # Find the first .app produced by Flutter
+          APP_BUNDLE_PATH="$(find "$SRC" -maxdepth 1 -type d -name '*.app' | head -n 1)"
+
+          if [ -z "$APP_BUNDLE_PATH" ]; then
             echo "No .app bundle found in $SRC"
-            ls -la
             exit 1
           fi
-          echo "Zipping bundle: $APP_BUNDLE -> $DST"
-          zip -r "$DST" "$APP_BUNDLE"
+
+          APP_BUNDLE_NAME="$(basename "$APP_BUNDLE_PATH")"
+          echo "Zipping: $APP_BUNDLE_NAME -> $DST"
+
+          cd "$SRC"
+          zip -r "$DST" "$APP_BUNDLE_NAME"
           echo "ZIP created at: $DST"
+
 
       - name: zip (Linux)
         if: matrix.os == 'ubuntu-latest'
