@@ -7,20 +7,16 @@ on:
   workflow_dispatch:     # allow manual runs too
 
 permissions:
-  contents: write        # needed to upload assets to Releases
+  contents: write
 
-# Use bash everywhere (even on Windows) unless overridden for a step
+# Use bash everywhere (even on Windows) unless overridden
 defaults:
   run:
     shell: bash
 
 env:
-  # Set this to the subfolder that contains your pubspec.yaml
-  # If your Flutter app is at repo root, use "."
+  # Change this if your Flutter app is not at repo root
   PROJECT_DIR: socialyze
-
-  # macOS app bundle name (adjust if your product name is different)
-  APP_BUNDLE_NAME: SociaLyze.app
 
 jobs:
   build-desktop:
@@ -49,27 +45,29 @@ jobs:
 
       - name: Show workspace
         run: |
-          echo "Current directory:" && pwd
+          echo "PWD:" && pwd
           echo "Root contents:" && ls -la
-          echo "Project dir (${PROJECT_DIR}) contents:" && ls -la "${PROJECT_DIR}"
+          echo "Project dir ($PROJECT_DIR) contents:" && ls -la "$PROJECT_DIR"
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
-          # flutter-version: "3.22.x"  # Optional: pin a version
 
       - name: Install Linux build dependencies
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+          sudo apt-get install -y \
+            clang cmake ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev libasound2-dev \
+            libgl1-mesa-dev libx11-dev
 
-      - name: Flutter pub get
+      - name: flutter pub get
         working-directory: ${{ env.PROJECT_DIR }}
         run: flutter pub get
 
-      - name: Enable desktop target
+      - name: enable desktop target
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           case "${{ matrix.build }}" in
@@ -78,48 +76,61 @@ jobs:
             linux)   flutter config --enable-linux-desktop ;;
           esac
 
-      - name: Build
+      - name: build
         working-directory: ${{ env.PROJECT_DIR }}
         run: flutter build ${{ matrix.build }} --release
 
-      # --- Zip per platform ---
+      # ---------- ZIP PER PLATFORM (WRITE ZIP TO PROJECT_DIR) ----------
 
-      - name: Zip build (Windows)
+      - name: zip (Windows)
         if: matrix.os == 'windows-latest'
-        working-directory: ${{ env.PROJECT_DIR }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          Compress-Archive -Path "${{ matrix.out_path }}\*" -DestinationPath "${{ matrix.zip }}"
+          $Src = "${{ env.PROJECT_DIR }}\${{ matrix.out_path }}"
+          $Dst = Join-Path $env:GITHUB_WORKSPACE "${{ env.PROJECT_DIR }}\${{ matrix.zip }}"
+          Compress-Archive -Path "$Src\*" -DestinationPath "$Dst"
+          Write-Host "Created ZIP at: $Dst"
 
-      - name: Zip build (macOS)
+      - name: zip (macOS)
         if: matrix.os == 'macos-latest'
-        working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          cd "${{ matrix.out_path }}"
-          if [ ! -d "${APP_BUNDLE_NAME}" ]; then
-            echo "App bundle '${APP_BUNDLE_NAME}' not found. Contents:"
+          SRC="${GITHUB_WORKSPACE}/${{ env.PROJECT_DIR }}/${{ matrix.out_path }}"
+          DST="${GITHUB_WORKSPACE}/${{ env.PROJECT_DIR }}/${{ matrix.zip }}"
+          cd "$SRC"
+          APP_BUNDLE="$(ls -1 *.app | head -n 1 || true)"
+          if [ -z "$APP_BUNDLE" ]; then
+            echo "No .app bundle found in $SRC"
             ls -la
             exit 1
           fi
-          zip -r "../../${{ matrix.zip }}" "${APP_BUNDLE_NAME}"
+          echo "Zipping bundle: $APP_BUNDLE -> $DST"
+          zip -r "$DST" "$APP_BUNDLE"
+          echo "ZIP created at: $DST"
 
-      - name: Zip build (Linux)
+      - name: zip (Linux)
         if: matrix.os == 'ubuntu-latest'
-        working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          cd "${{ matrix.out_path }}/.."
-          # 'bundle' contains the executable and libraries
-          zip -r "../../${{ matrix.zip }}" "bundle"
+          SRC="${GITHUB_WORKSPACE}/${{ env.PROJECT_DIR }}/${{ matrix.out_path }}/.."
+          DST="${GITHUB_WORKSPACE}/${{ env.PROJECT_DIR }}/${{ matrix.zip }}"
+          cd "$SRC"
+          if [ ! -d "bundle" ]; then
+            echo "bundle/ not found in $SRC"
+            ls -la
+            exit 1
+          fi
+          echo "Zipping bundle/ -> $DST"
+          zip -r "$DST" "bundle"
+          echo "ZIP created at: $DST"
 
-      # --- Upload CI artifacts (optional but handy for debugging) ---
+      # ---------- UPLOAD + ATTACH ----------
+
       - name: Upload artifact (CI)
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.zip }}
           path: ${{ env.PROJECT_DIR }}/${{ matrix.zip }}
 
-      # --- Attach to GitHub Release ---
       - name: Attach to GitHub Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
