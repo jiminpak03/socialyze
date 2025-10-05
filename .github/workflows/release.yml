@@ -3,17 +3,28 @@ name: SociaLyze Desktop Release
 on:
   push:
     tags:
-      - "v*.*.*"
-  workflow_dispatch:
+      - "v*.*.*"        # e.g. v0.1.0
+  workflow_dispatch:     # allow manual runs too
 
 permissions:
-  contents: write
+  contents: write        # needed to upload assets to Releases
+
+# Use bash everywhere (even on Windows) unless overridden for a step
+defaults:
+  run:
+    shell: bash
 
 env:
-  PROJECT_DIR: socialyze   # <— set to your Flutter subfolder name
+  # Set this to the subfolder that contains your pubspec.yaml
+  # If your Flutter app is at repo root, use "."
+  PROJECT_DIR: socialyze
+
+  # macOS app bundle name (adjust if your product name is different)
+  APP_BUNDLE_NAME: SociaLyze.app
 
 jobs:
   build-desktop:
+    name: Build (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -31,31 +42,34 @@ jobs:
             zip: SociaLyze_Linux.zip
             out_path: build/linux/x64/release/bundle
     runs-on: ${{ matrix.os }}
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out
+        uses: actions/checkout@v4
 
       - name: Show workspace
         run: |
-          pwd
-          ls -la
-          echo "Project dir listing:"
-          ls -la "${{ env.PROJECT_DIR }}"
+          echo "Current directory:" && pwd
+          echo "Root contents:" && ls -la
+          echo "Project dir (${PROJECT_DIR}) contents:" && ls -la "${PROJECT_DIR}"
 
-      - uses: subosito/flutter-action@v2
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
         with:
           channel: stable
+          # flutter-version: "3.22.x"  # Optional: pin a version
 
-      - name: Install Linux deps
+      - name: Install Linux build dependencies
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
           sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
 
-      - name: flutter pub get
+      - name: Flutter pub get
         working-directory: ${{ env.PROJECT_DIR }}
         run: flutter pub get
 
-      - name: enable desktop
+      - name: Enable desktop target
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           case "${{ matrix.build }}" in
@@ -64,38 +78,50 @@ jobs:
             linux)   flutter config --enable-linux-desktop ;;
           esac
 
-      - name: build
+      - name: Build
         working-directory: ${{ env.PROJECT_DIR }}
         run: flutter build ${{ matrix.build }} --release
 
-      - name: zip (Windows)
+      # --- Zip per platform ---
+
+      - name: Zip build (Windows)
         if: matrix.os == 'windows-latest'
         working-directory: ${{ env.PROJECT_DIR }}
         shell: pwsh
-        run: Compress-Archive -Path "${{ matrix.out_path }}\*" -DestinationPath "${{ matrix.zip }}"
+        run: |
+          $ErrorActionPreference = "Stop"
+          Compress-Archive -Path "${{ matrix.out_path }}\*" -DestinationPath "${{ matrix.zip }}"
 
-      - name: zip (macOS)
+      - name: Zip build (macOS)
         if: matrix.os == 'macos-latest'
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           cd "${{ matrix.out_path }}"
-          # If your bundle name differs, replace 'SociaLyze.app'
-          zip -r "../../${{ matrix.zip }}" "SociaLyze.app"
+          if [ ! -d "${APP_BUNDLE_NAME}" ]; then
+            echo "App bundle '${APP_BUNDLE_NAME}' not found. Contents:"
+            ls -la
+            exit 1
+          fi
+          zip -r "../../${{ matrix.zip }}" "${APP_BUNDLE_NAME}"
 
-      - name: zip (Linux)
+      - name: Zip build (Linux)
         if: matrix.os == 'ubuntu-latest'
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           cd "${{ matrix.out_path }}/.."
+          # 'bundle' contains the executable and libraries
           zip -r "../../${{ matrix.zip }}" "bundle"
 
-      - uses: actions/upload-artifact@v4
+      # --- Upload CI artifacts (optional but handy for debugging) ---
+      - name: Upload artifact (CI)
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.zip }}
           path: ${{ env.PROJECT_DIR }}/${{ matrix.zip }}
 
-      - name: attach to release
-        if: startsWith(github.ref, 'refs/tags/')
+      # --- Attach to GitHub Release ---
+      - name: Attach to GitHub Release
         uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
         with:
           files: ${{ env.PROJECT_DIR }}/${{ matrix.zip }}
