@@ -515,7 +515,7 @@ class _VideoPanelState extends State<_VideoPanel> {
   Future<void> _open(String path) async {
     await _player.open(Media(path));
     widget.controller.attachVideo(path);
-    setState(() {}); // refresh the filename display
+    setState(() {});
   }
 
   @override
@@ -543,17 +543,12 @@ class _VideoPanelState extends State<_VideoPanel> {
                 fit: StackFit.expand,
                 children: [
                   if (videoPath != null)
-                    // Actual video rendering
                     Video(controller: _videoController)
                   else
-                    // Empty state
                     Container(
                       color: _dragging ? Colors.indigo.withOpacity(0.08) : Colors.black,
                       child: InkWell(
-                        onTap: () {
-                          // Optional: load a demo clip you ship with the app
-                          // _open('demo_session.mp4');
-                        },
+                        onTap: () {},
                         child: Center(
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
@@ -576,8 +571,6 @@ class _VideoPanelState extends State<_VideoPanel> {
                         ),
                       ),
                     ),
-
-                  // Status pill
                   Positioned(
                     left: 16,
                     bottom: 16,
@@ -600,35 +593,56 @@ class _VideoPanelState extends State<_VideoPanel> {
             ),
           ),
 
-          // Transport controls
+          // Transport controls using Wrap to avoid overflow
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            child: Row(
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                FilledButton.tonal(onPressed: () => _player.play(), child: const Icon(Icons.play_arrow)),
-                const SizedBox(width: 8),
-                FilledButton.tonal(onPressed: () => _player.pause(), child: const Icon(Icons.pause)),
-                const SizedBox(width: 16),
-                FilledButton.tonal(
-                  onPressed: () async {
-                    final r = await _player.stream.rate.first;
-                    _player.setRate((r - 0.25).clamp(0.25, 4.0));
-                  },
-                  child: const Text('- speed'),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    FilledButton.tonal(
+                      onPressed: () => _player.play(),
+                      child: const Icon(Icons.play_arrow),
+                    ),
+                    const SizedBox(width: 8),
+                    FilledButton.tonal(
+                      onPressed: () => _player.pause(),
+                      child: const Icon(Icons.pause),
+                    ),
+                    const SizedBox(width: 12),
+                    FilledButton.tonal(
+                      onPressed: () async {
+                        final r = await _player.stream.rate.first;
+                        _player.setRate((r - 0.25).clamp(0.25, 4.0));
+                      },
+                      child: const Text('- speed'),
+                    ),
+                    const SizedBox(width: 8),
+                    FilledButton.tonal(
+                      onPressed: () async {
+                        final r = await _player.stream.rate.first;
+                        _player.setRate((r + 0.25).clamp(0.25, 4.0));
+                      },
+                      child: const Text('+ speed'),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 8),
-                FilledButton.tonal(
-                  onPressed: () async {
-                    final r = await _player.stream.rate.first;
-                    _player.setRate((r + 0.25).clamp(0.25, 4.0));
-                  },
-                  child: const Text('+ speed'),
-                ),
-                const Spacer(),
                 if (videoPath != null)
-                  Text(
-                    videoPath.split('/').last,
-                    overflow: TextOverflow.ellipsis,
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 400),
+                    child: Tooltip(
+                      message: videoPath,
+                      child: Text(
+                        videoPath.split('/').last,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
                   ),
               ],
             ),
@@ -638,6 +652,7 @@ class _VideoPanelState extends State<_VideoPanel> {
     );
   }
 }
+
 
 
 class _EventLog extends StatelessWidget {
