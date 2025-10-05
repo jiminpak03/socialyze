@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -490,7 +491,6 @@ class _SessionToolbar extends StatelessWidget {
 
 class _VideoPanel extends StatefulWidget {
   const _VideoPanel({required this.session, required this.controller});
-
   final SessionState session;
   final SessionController controller;
 
@@ -500,27 +500,29 @@ class _VideoPanel extends StatefulWidget {
 
 class _VideoPanelState extends State<_VideoPanel> {
   bool _dragging = false;
+  bool _opening = false;
+  double _rate = 1.0;
+  StreamSubscription<double>? _rateSub;
 
-  // media_kit: player + controller
+  // Player + controller
   late final Player _player = Player();
   late final VideoController _videoController = VideoController(_player);
-
-  bool _opening = false;
-
-  Future<void> _open(String path) async {
-    setState(() => _opening = true);
-    try {
-      await _player.open(Media(path));
-      widget.controller.attachVideo(path);
-    } finally {
-      if (mounted) setState(() => _opening = false);
-    }
-  }
 
   @override
   void dispose() {
     _player.dispose();
     super.dispose();
+  }
+
+  Future<void> _open(String path) async {
+    setState(() => _opening = true);
+    try {
+      await _player.open(Media(path));
+      await _player.setRate(_rate); // ensure current speed applies
+      widget.controller.attachVideo(path);
+    } finally {
+      if (mounted) setState(() => _opening = false);
+    }
   }
 
   @override
@@ -529,103 +531,103 @@ class _VideoPanelState extends State<_VideoPanel> {
 
     return Card(
       elevation: 2,
-      clipBehavior: Clip.antiAlias,
+      clipBehavior: Clip.none, // <-- important: don't clip the Video view
       child: Column(
         children: [
-          // Drop area + video
           Expanded(
             child: DropTarget(
               onDragEntered: (_) => setState(() => _dragging = true),
               onDragExited: (_) => setState(() => _dragging = false),
               onDragDone: (details) {
                 final file = details.files.firstOrNull;
-                if (file?.path != null) {
-                  _open(file!.path);
-                }
+                if (file?.path != null) _open(file!.path);
                 setState(() => _dragging = false);
               },
               child: Stack(
                 fit: StackFit.expand,
                 children: [
+                  // Video or empty state
                   if (videoPath != null)
-                    Video(controller: _videoController)
+                    // Give it real size & avoid clipping parents
+                    Container(
+                      color: Colors.black,
+                      child: Video(
+                        controller: _videoController,
+                        fit: BoxFit.contain, // <-- ensure it scales visibly
+                      ),
+                    )
                   else
-                    // Empty state (scrollable so it won't overflow in short windows)
+                    // Empty state: allow scroll so it won't overflow vertically
                     Container(
                       color: _dragging
                           ? Colors.indigo.withOpacity(0.08)
                           : Colors.black,
-                      child: InkWell(
-                        onTap: () {}, // optional demo open
-                        child: LayoutBuilder(
-                          builder: (context, constraints) {
-                            return SingleChildScrollView(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 16, vertical: 12),
-                              child: ConstrainedBox(
-                                // Ensure at least the viewport height so Center works,
-                                // but allow scrolling if contents are taller.
-                                constraints: BoxConstraints(
-                                    minHeight: constraints.maxHeight),
-                                child: Center(
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      const Icon(Icons.video_library_outlined,
-                                          size: 64, color: Colors.white),
-                                      const SizedBox(height: 12),
-                                      Text(
-                                        'Drop a video file to play (AVI/MP4)',
-                                        textAlign: TextAlign.center,
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .titleMedium
-                                            ?.copyWith(color: Colors.white),
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          return SingleChildScrollView(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 16, vertical: 12),
+                            child: ConstrainedBox(
+                              constraints: BoxConstraints(
+                                  minHeight: constraints.maxHeight),
+                              child: Center(
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(Icons.video_library_outlined,
+                                        size: 64, color: Colors.white),
+                                    const SizedBox(height: 12),
+                                    Text(
+                                      'Drop a video file to play (AVI/MP4)',
+                                      textAlign: TextAlign.center,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .titleMedium
+                                          ?.copyWith(color: Colors.white),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      'Playback powered by media_kit',
+                                      textAlign: TextAlign.center,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(color: Colors.white70),
+                                    ),
+                                    const SizedBox(height: 12),
+                                    // Status pill only when empty state is shown
+                                    DecoratedBox(
+                                      decoration: BoxDecoration(
+                                        color: Colors.white.withOpacity(0.08),
+                                        borderRadius: BorderRadius.circular(12),
                                       ),
-                                      const SizedBox(height: 8),
-                                      Text(
-                                        'Playback powered by media_kit',
-                                        textAlign: TextAlign.center,
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .bodySmall
-                                            ?.copyWith(color: Colors.white70),
+                                      child: Padding(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 12, vertical: 6),
+                                        child: Text(
+                                          widget.session.isRecording
+                                              ? 'Logging active'
+                                              : 'Ready to record',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodySmall
+                                              ?.copyWith(color: Colors.white),
+                                        ),
                                       ),
-                                    ],
-                                  ),
+                                    ),
+                                  ],
                                 ),
                               ),
-                            );
-                          },
-                        ),
+                            ),
+                          );
+                        },
                       ),
                     ),
-                  Positioned(
-                    left: 16,
-                    bottom: 16,
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.6),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 6),
-                        child: Text(
-                          widget.session.isRecording
-                              ? 'Logging active'
-                              : 'Ready to record',
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodySmall
-                              ?.copyWith(color: Colors.white),
-                        ),
-                      ),
-                    ),
-                  ),
+
+                  // Loading overlay while opening a file
                   if (_opening)
                     Container(
-                      color: Colors.black45,
+                      color: Colors.black54,
                       child: const Center(child: CircularProgressIndicator()),
                     ),
                 ],
@@ -633,12 +635,12 @@ class _VideoPanelState extends State<_VideoPanel> {
             ),
           ),
 
-          // Transport controls using Wrap (no nested Row)
+          // Controls (Wrap so they don't overflow)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             child: Wrap(
-              spacing: 8, // space between items on a line
-              runSpacing: 8, // space between lines when wrapping
+              spacing: 8,
+              runSpacing: 8,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 FilledButton.tonal(
@@ -651,24 +653,27 @@ class _VideoPanelState extends State<_VideoPanel> {
                 ),
                 FilledButton.tonal(
                   onPressed: () async {
-                    final r = await _player.stream.rate.first;
-                    _player.setRate((r - 0.25).clamp(0.25, 4.0));
+                    final next = (_rate - 0.25).clamp(0.25, 4.0);
+                    setState(() => _rate = next);
+                    await _player.setRate(next);
                   },
                   child: const Text('- speed'),
                 ),
                 FilledButton.tonal(
                   onPressed: () async {
-                    final r = await _player.stream.rate.first;
-                    _player.setRate((r + 0.25).clamp(0.25, 4.0));
+                    final next = (_rate + 0.25).clamp(0.25, 4.0);
+                    setState(() => _rate = next);
+                    await _player.setRate(next);
                   },
                   child: const Text('+ speed'),
                 ),
 
-                // Filename (wraps to a new line if needed and ellipsizes)
+                // Live speed indicator
+                Chip(label: Text('Speed: x${_rate.toStringAsFixed(2)}')),
+
                 if (videoPath != null)
                   ConstrainedBox(
-                    constraints: const BoxConstraints(
-                        maxWidth: 420), // tweak as you like
+                    constraints: const BoxConstraints(maxWidth: 420),
                     child: Tooltip(
                       message: videoPath,
                       child: Text(
@@ -925,16 +930,27 @@ class _RemapKeysDialogState extends State<_RemapKeysDialog> {
   Chamber? _listeningChamber;
   String? _error;
   final FocusNode _focusNode = FocusNode();
+  StreamSubscription<double>? _rateSub; // <-- Add this line
+
+  double _rate = 1.0; // <-- Add this line to define _rate
+
+  // Add the missing Player instance
+  late final Player _player = Player();
 
   @override
   void initState() {
     super.initState();
     _workingMap = _cloneKeyMap(widget.session.keyMap);
+    _rateSub = _player.stream.rate.listen((r) {
+      setState(() => _rate = r);
+    });
   }
 
   @override
   void dispose() {
     _focusNode.dispose();
+    _rateSub?.cancel();
+    _player.dispose();
     super.dispose();
   }
 
