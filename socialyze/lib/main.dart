@@ -2,6 +2,9 @@ import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:media_kit/media_kit.dart';
+import 'package:media_kit_video/media_kit_video.dart';
+
 
 import 'analysis/session_analyzer.dart';
 
@@ -499,96 +502,143 @@ class _VideoPanel extends StatefulWidget {
 class _VideoPanelState extends State<_VideoPanel> {
   bool _dragging = false;
 
+  // media_kit: player + controller
+  late final Player _player = Player();
+  late final VideoController _videoController = VideoController(_player);
+
+  @override
+  void dispose() {
+    _player.dispose();
+    super.dispose();
+  }
+
+  Future<void> _open(String path) async {
+    await _player.open(Media(path));
+    widget.controller.attachVideo(path);
+    setState(() {}); // refresh the filename display
+  }
+
   @override
   Widget build(BuildContext context) {
     final videoPath = widget.session.videoPath;
+
     return Card(
       elevation: 2,
       clipBehavior: Clip.antiAlias,
-      child: DropTarget(
-        onDragEntered: (_) => setState(() => _dragging = true),
-        onDragExited: (_) => setState(() => _dragging = false),
-        onDragDone: (details) {
-          final file = details.files.firstOrNull;
-          widget.controller.attachVideo(file?.path);
-          setState(() => _dragging = false);
-        },
-        child: InkWell(
-          onTap: () {
-            widget.controller.attachVideo('demo_session.mp4');
-          },
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
-            color: _dragging ? Colors.indigo.withOpacity(0.08) : Colors.black,
-            child: Stack(
+      child: Column(
+        children: [
+          // Drop area + video
+          Expanded(
+            child: DropTarget(
+              onDragEntered: (_) => setState(() => _dragging = true),
+              onDragExited: (_) => setState(() => _dragging = false),
+              onDragDone: (details) {
+                final file = details.files.firstOrNull;
+                if (file?.path != null) {
+                  _open(file!.path);
+                }
+                setState(() => _dragging = false);
+              },
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  if (videoPath != null)
+                    // Actual video rendering
+                    Video(controller: _videoController)
+                  else
+                    // Empty state
+                    Container(
+                      color: _dragging ? Colors.indigo.withOpacity(0.08) : Colors.black,
+                      child: InkWell(
+                        onTap: () {
+                          // Optional: load a demo clip you ship with the app
+                          // _open('demo_session.mp4');
+                        },
+                        child: Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.video_library_outlined, size: 64, color: Colors.white),
+                              const SizedBox(height: 12),
+                              Text(
+                                'Drop a video file to play (AVI/MP4)',
+                                textAlign: TextAlign.center,
+                                style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.white),
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                'Playback powered by media_kit',
+                                textAlign: TextAlign.center,
+                                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.white70),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+
+                  // Status pill
+                  Positioned(
+                    left: 16,
+                    bottom: 16,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.6),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        child: Text(
+                          widget.session.isRecording ? 'Logging active' : 'Ready to record',
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.white),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          // Transport controls
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Row(
               children: [
-                Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        videoPath == null
-                            ? Icons.video_library_outlined
-                            : Icons.play_circle_outline,
-                        size: 64,
-                        color: Colors.white,
-                      ),
-                      const SizedBox(height: 12),
-                      Text(
-                        videoPath == null
-                            ? 'Drop a video file or click to load a demo clip'
-                            : 'Loaded: ${videoPath.split('/').last}',
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context)
-                            .textTheme
-                            .titleMedium
-                            ?.copyWith(color: Colors.white),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Playback handled by media_kit when running the desktop app.',
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodySmall
-                            ?.copyWith(color: Colors.white70),
-                      ),
-                    ],
-                  ),
+                FilledButton.tonal(onPressed: () => _player.play(), child: const Icon(Icons.play_arrow)),
+                const SizedBox(width: 8),
+                FilledButton.tonal(onPressed: () => _player.pause(), child: const Icon(Icons.pause)),
+                const SizedBox(width: 16),
+                FilledButton.tonal(
+                  onPressed: () async {
+                    final r = await _player.stream.rate.first;
+                    _player.setRate((r - 0.25).clamp(0.25, 4.0));
+                  },
+                  child: const Text('- speed'),
                 ),
-                Positioned(
-                  left: 16,
-                  bottom: 16,
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.6),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 6,
-                      ),
-                      child: Text(
-                        widget.session.isRecording
-                            ? 'Logging active'
-                            : 'Ready to record',
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodySmall
-                            ?.copyWith(color: Colors.white),
-                      ),
-                    ),
-                  ),
+                const SizedBox(width: 8),
+                FilledButton.tonal(
+                  onPressed: () async {
+                    final r = await _player.stream.rate.first;
+                    _player.setRate((r + 0.25).clamp(0.25, 4.0));
+                  },
+                  child: const Text('+ speed'),
                 ),
+                const Spacer(),
+                if (videoPath != null)
+                  Text(
+                    videoPath.split('/').last,
+                    overflow: TextOverflow.ellipsis,
+                  ),
               ],
             ),
           ),
-        ),
+        ],
       ),
     );
   }
 }
+
 
 class _EventLog extends StatelessWidget {
   const _EventLog({required this.session});
