@@ -5,11 +5,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
-
 import 'analysis/session_analyzer.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  MediaKit.ensureInitialized(); // <-- add this
   runApp(const ProviderScope(child: SociaLyzeApp()));
 }
 
@@ -133,9 +133,8 @@ class SessionState {
     this.videoPath,
     this.summary,
     Map<String, Map<Chamber, LogicalKeyboardKey>>? keyMap,
-  })  : events = events == null
-            ? const []
-            : List<SessionEvent>.unmodifiable(events),
+  })  : events =
+            events == null ? const [] : List<SessionEvent>.unmodifiable(events),
         keyMap = _freezeKeyMap(keyMap);
 
   final Protocol protocol;
@@ -161,16 +160,13 @@ class SessionState {
     return SessionState(
       protocol: protocol ?? this.protocol,
       isRecording: isRecording ?? this.isRecording,
-      startedAt: startedAt == _copySentinel
-          ? this.startedAt
-          : startedAt as DateTime?,
-      stoppedAt: stoppedAt == _copySentinel
-          ? this.stoppedAt
-          : stoppedAt as DateTime?,
+      startedAt:
+          startedAt == _copySentinel ? this.startedAt : startedAt as DateTime?,
+      stoppedAt:
+          stoppedAt == _copySentinel ? this.stoppedAt : stoppedAt as DateTime?,
       events: events ?? this.events,
-      videoPath: videoPath == _copySentinel
-          ? this.videoPath
-          : videoPath as String?,
+      videoPath:
+          videoPath == _copySentinel ? this.videoPath : videoPath as String?,
       summary: clearSummary
           ? null
           : summary == _copySentinel
@@ -316,7 +312,9 @@ class _SessionHomeState extends ConsumerState<SessionHome> {
       focusNode: _keyboardFocus,
       autofocus: true,
       onKey: (event) {
-        if (event is! RawKeyDownEvent || event.isAltPressed || event.isControlPressed) {
+        if (event is! RawKeyDownEvent ||
+            event.isAltPressed ||
+            event.isControlPressed) {
           return;
         }
         final binding = bindingLookup[event.logicalKey];
@@ -361,7 +359,8 @@ class _SessionHomeState extends ConsumerState<SessionHome> {
                   children: [
                     Expanded(
                       flex: 3,
-                      child: _VideoPanel(session: session, controller: controller),
+                      child:
+                          _VideoPanel(session: session, controller: controller),
                     ),
                     const SizedBox(width: 24),
                     Expanded(
@@ -506,16 +505,22 @@ class _VideoPanelState extends State<_VideoPanel> {
   late final Player _player = Player();
   late final VideoController _videoController = VideoController(_player);
 
+  bool _opening = false;
+
+  Future<void> _open(String path) async {
+    setState(() => _opening = true);
+    try {
+      await _player.open(Media(path));
+      widget.controller.attachVideo(path);
+    } finally {
+      if (mounted) setState(() => _opening = false);
+    }
+  }
+
   @override
   void dispose() {
     _player.dispose();
     super.dispose();
-  }
-
-  Future<void> _open(String path) async {
-    await _player.open(Media(path));
-    widget.controller.attachVideo(path);
-    setState(() {});
   }
 
   @override
@@ -545,29 +550,53 @@ class _VideoPanelState extends State<_VideoPanel> {
                   if (videoPath != null)
                     Video(controller: _videoController)
                   else
+                    // Empty state (scrollable so it won't overflow in short windows)
                     Container(
-                      color: _dragging ? Colors.indigo.withOpacity(0.08) : Colors.black,
+                      color: _dragging
+                          ? Colors.indigo.withOpacity(0.08)
+                          : Colors.black,
                       child: InkWell(
-                        onTap: () {},
-                        child: Center(
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Icon(Icons.video_library_outlined, size: 64, color: Colors.white),
-                              const SizedBox(height: 12),
-                              Text(
-                                'Drop a video file to play (AVI/MP4)',
-                                textAlign: TextAlign.center,
-                                style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.white),
+                        onTap: () {}, // optional demo open
+                        child: LayoutBuilder(
+                          builder: (context, constraints) {
+                            return SingleChildScrollView(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 16, vertical: 12),
+                              child: ConstrainedBox(
+                                // Ensure at least the viewport height so Center works,
+                                // but allow scrolling if contents are taller.
+                                constraints: BoxConstraints(
+                                    minHeight: constraints.maxHeight),
+                                child: Center(
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(Icons.video_library_outlined,
+                                          size: 64, color: Colors.white),
+                                      const SizedBox(height: 12),
+                                      Text(
+                                        'Drop a video file to play (AVI/MP4)',
+                                        textAlign: TextAlign.center,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .titleMedium
+                                            ?.copyWith(color: Colors.white),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Text(
+                                        'Playback powered by media_kit',
+                                        textAlign: TextAlign.center,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodySmall
+                                            ?.copyWith(color: Colors.white70),
+                                      ),
+                                    ],
+                                  ),
+                                ),
                               ),
-                              const SizedBox(height: 8),
-                              Text(
-                                'Playback powered by media_kit',
-                                textAlign: TextAlign.center,
-                                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.white70),
-                              ),
-                            ],
-                          ),
+                            );
+                          },
                         ),
                       ),
                     ),
@@ -580,61 +609,66 @@ class _VideoPanelState extends State<_VideoPanel> {
                         borderRadius: BorderRadius.circular(12),
                       ),
                       child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 6),
                         child: Text(
-                          widget.session.isRecording ? 'Logging active' : 'Ready to record',
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.white),
+                          widget.session.isRecording
+                              ? 'Logging active'
+                              : 'Ready to record',
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodySmall
+                              ?.copyWith(color: Colors.white),
                         ),
                       ),
                     ),
                   ),
+                  if (_opening)
+                    Container(
+                      color: Colors.black45,
+                      child: const Center(child: CircularProgressIndicator()),
+                    ),
                 ],
               ),
             ),
           ),
 
-          // Transport controls using Wrap to avoid overflow
+          // Transport controls using Wrap (no nested Row)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             child: Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              alignment: WrapAlignment.spaceBetween,
+              spacing: 8, // space between items on a line
+              runSpacing: 8, // space between lines when wrapping
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    FilledButton.tonal(
-                      onPressed: () => _player.play(),
-                      child: const Icon(Icons.play_arrow),
-                    ),
-                    const SizedBox(width: 8),
-                    FilledButton.tonal(
-                      onPressed: () => _player.pause(),
-                      child: const Icon(Icons.pause),
-                    ),
-                    const SizedBox(width: 12),
-                    FilledButton.tonal(
-                      onPressed: () async {
-                        final r = await _player.stream.rate.first;
-                        _player.setRate((r - 0.25).clamp(0.25, 4.0));
-                      },
-                      child: const Text('- speed'),
-                    ),
-                    const SizedBox(width: 8),
-                    FilledButton.tonal(
-                      onPressed: () async {
-                        final r = await _player.stream.rate.first;
-                        _player.setRate((r + 0.25).clamp(0.25, 4.0));
-                      },
-                      child: const Text('+ speed'),
-                    ),
-                  ],
+                FilledButton.tonal(
+                  onPressed: () => _player.play(),
+                  child: const Icon(Icons.play_arrow),
                 ),
+                FilledButton.tonal(
+                  onPressed: () => _player.pause(),
+                  child: const Icon(Icons.pause),
+                ),
+                FilledButton.tonal(
+                  onPressed: () async {
+                    final r = await _player.stream.rate.first;
+                    _player.setRate((r - 0.25).clamp(0.25, 4.0));
+                  },
+                  child: const Text('- speed'),
+                ),
+                FilledButton.tonal(
+                  onPressed: () async {
+                    final r = await _player.stream.rate.first;
+                    _player.setRate((r + 0.25).clamp(0.25, 4.0));
+                  },
+                  child: const Text('+ speed'),
+                ),
+
+                // Filename (wraps to a new line if needed and ellipsizes)
                 if (videoPath != null)
                   ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 400),
+                    constraints: const BoxConstraints(
+                        maxWidth: 420), // tweak as you like
                     child: Tooltip(
                       message: videoPath,
                       child: Text(
@@ -652,8 +686,6 @@ class _VideoPanelState extends State<_VideoPanel> {
     );
   }
 }
-
-
 
 class _EventLog extends StatelessWidget {
   const _EventLog({required this.session});
@@ -697,7 +729,8 @@ class _EventLog extends StatelessWidget {
                           ),
                           subtitle: Text(_formatTime(event.timestamp)),
                           trailing: Chip(
-                            label: Text(_chamberLabel(session.protocol, event.chamber)),
+                            label: Text(
+                                _chamberLabel(session.protocol, event.chamber)),
                           ),
                         );
                       },
@@ -905,7 +938,8 @@ class _RemapKeysDialogState extends State<_RemapKeysDialog> {
     super.dispose();
   }
 
-  bool get _isListening => _listeningMouseId != null && _listeningChamber != null;
+  bool get _isListening =>
+      _listeningMouseId != null && _listeningChamber != null;
 
   void _startListening(String mouseId, Chamber chamber) {
     setState(() {
@@ -1132,8 +1166,7 @@ class _KeyRemapSection extends StatelessWidget {
               title: Text(_chamberLabel(protocol, chamber)),
               subtitle: Text('Shortcut: ${_describeKey(key)}'),
               trailing: OutlinedButton(
-                onPressed:
-                    listening ? onCancel : () => onTap(mouseId, chamber),
+                onPressed: listening ? onCancel : () => onTap(mouseId, chamber),
                 child: Text(listening ? 'Cancel' : 'Change'),
               ),
             );
