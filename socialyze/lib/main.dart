@@ -1,16 +1,30 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:desktop_drop/desktop_drop.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
+import 'package:window_manager/window_manager.dart';
 
 import 'analysis/session_analyzer.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  MediaKit.ensureInitialized(); // <-- add this
+  MediaKit.ensureInitialized();
+  
+  // Initialize window manager and set minimum size
+  await windowManager.ensureInitialized();
+  const windowOptions = WindowOptions(
+    minimumSize: Size(1400, 900),
+  );
+  windowManager.waitUntilReadyToShow(windowOptions, () async {
+    await windowManager.show();
+    await windowManager.focus();
+  });
+  
   runApp(const ProviderScope(child: SociaLyzeApp()));
 }
 
@@ -66,7 +80,7 @@ extension on Protocol {
 
 const _copySentinel = Object();
 
-const List<String> _mouseIds = ['Mouse A', 'Mouse B', 'Mouse C'];
+List<String> _mouseIds = ['Mouse A', 'Mouse B', 'Mouse C'];
 const List<Chamber> _chamberOrder = [
   Chamber.empty,
   Chamber.middle,
@@ -267,11 +281,65 @@ class SessionController extends StateNotifier<SessionState> {
     return generateSessionCsv(summary);
   }
 
+  Future<bool> exportSummaryToFile() async {
+    final summary = state.summary;
+    if (summary == null) {
+      return false;
+    }
+    
+    try {
+      final csv = generateSessionCsv(summary);
+      final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
+      
+      final result = await FilePicker.platform.saveFile(
+        fileName: 'socialyze_summary_$timestamp.csv',
+        allowedExtensions: ['csv'],
+        type: FileType.custom,
+      );
+      
+      if (result != null) {
+        final file = File(result);
+        await file.writeAsString(csv);
+        return true;
+      }
+      return false;
+    } catch (e) {
+      return false;
+    }
+  }
+
   void setKeyBindings(
     Map<String, Map<Chamber, LogicalKeyboardKey>> keyMap,
   ) {
     state = state.copyWith(keyMap: keyMap);
   }
+
+    Future<bool> exportSummaryAsExcel() async {
+      final summary = state.summary;
+      if (summary == null) {
+        return false;
+      }
+    
+      try {
+        final tsv = generateSessionExcel(summary);
+        final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
+      
+        final result = await FilePicker.platform.saveFile(
+          fileName: 'socialyze_summary_$timestamp.xlsx',
+          allowedExtensions: ['xlsx'],
+          type: FileType.custom,
+        );
+      
+        if (result != null) {
+          final file = File(result);
+          await file.writeAsString(tsv);
+          return true;
+        }
+        return false;
+      } catch (e) {
+        return false;
+      }
+    }
 }
 
 class SessionHome extends ConsumerStatefulWidget {
@@ -309,13 +377,13 @@ class _SessionHomeState extends ConsumerState<SessionHome> {
       for (final binding in bindings) binding.key: binding,
     };
 
-    return RawKeyboardListener(
+    return KeyboardListener(
       focusNode: _keyboardFocus,
       autofocus: true,
-      onKey: (event) {
-        if (event is! RawKeyDownEvent ||
-            event.isAltPressed ||
-            event.isControlPressed) {
+      onKeyEvent: (event) {
+        if (event is! KeyDownEvent ||
+            HardwareKeyboard.instance.isAltPressed ||
+            HardwareKeyboard.instance.isControlPressed) {
           return;
         }
         final binding = bindingLookup[event.logicalKey];
@@ -356,12 +424,12 @@ class _SessionHomeState extends ConsumerState<SessionHome> {
               const SizedBox(height: 24),
               Expanded(
                 child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Expanded(
                       flex: 3,
-                      child:
-                          _VideoPanel(session: session, controller: controller),
+                      child: _VideoPanel(
+                          session: session, controller: controller),
                     ),
                     const SizedBox(width: 24),
                     Expanded(
@@ -377,7 +445,11 @@ class _SessionHomeState extends ConsumerState<SessionHome> {
                 ),
               ),
               const SizedBox(height: 24),
-              _KeyboardLegend(protocol: session.protocol, bindings: bindings),
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: _KeyboardLegend(
+                    protocol: session.protocol, bindings: bindings),
+              ),
             ],
           ),
         ),
@@ -451,34 +523,61 @@ class _SessionToolbar extends StatelessWidget {
         ),
         ElevatedButton.icon(
           icon: const Icon(Icons.table_view),
-          label: const Text('Export CSV'),
+          label: const Text('Export Summary'),
           onPressed: session.summary == null
               ? null
-              : () {
-                  final csv = controller.exportCsv();
-                  if (csv == null) {
-                    return;
-                  }
-                  showDialog<void>(
-                    context: context,
-                    builder: (context) {
-                      return AlertDialog(
-                        title: const Text('Session export'),
-                        content: SizedBox(
-                          width: 500,
-                          child: SelectableText(csv),
-                        ),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.of(context).pop(),
-                            child: const Text('Close'),
-                          ),
-                        ],
-                      );
-                    },
+              : () async {
+                  final success = await controller.exportSummaryToFile();
+                  if (!context.mounted) return;
+                  
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        success
+                            ? 'Summary exported successfully'
+                            : 'Export cancelled or failed',
+                      ),
+                      duration: const Duration(seconds: 2),
+                    ),
                   );
                 },
         ),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.file_download),
+            label: const Text('Export as Excel'),
+            onPressed: session.summary == null
+                ? null
+                : () async {
+                    final success = await controller.exportSummaryAsExcel();
+                    if (!context.mounted) return;
+                  
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          success
+                              ? 'Excel file exported successfully'
+                              : 'Export cancelled or failed',
+                        ),
+                        duration: const Duration(seconds: 2),
+                      ),
+                    );
+                  },
+          ),
+          OutlinedButton.icon(
+            icon: const Icon(Icons.edit),
+            label: const Text('Rename mice'),
+            onPressed: session.isRecording
+                ? null
+                : () {
+                    showDialog<void>(
+                      context: context,
+                      builder: (context) => _RenameMouseDialog(
+                        session: session,
+                        controller: controller,
+                      ),
+                    );
+                  },
+          ),
         if (session.startedAt != null)
           Text(
             'Started at: ${_formatTime(session.startedAt!)}',
@@ -502,7 +601,6 @@ class _VideoPanelState extends State<_VideoPanel> {
   bool _dragging = false;
   bool _opening = false;
   double _rate = 1.0;
-  StreamSubscription<double>? _rateSub;
 
   // Player + controller
   late final Player _player = Player();
@@ -520,6 +618,12 @@ class _VideoPanelState extends State<_VideoPanel> {
       await _player.open(Media(path));
       await _player.setRate(_rate); // ensure current speed applies
       widget.controller.attachVideo(path);
+      
+      // Small delay to ensure texture is properly sized before showing
+      await Future.delayed(const Duration(milliseconds: 100));
+      if (mounted) {
+        setState(() {}); // Force rebuild to ensure video is displayed
+      }
     } finally {
       if (mounted) setState(() => _opening = false);
     }
@@ -531,7 +635,7 @@ class _VideoPanelState extends State<_VideoPanel> {
 
     return Card(
       elevation: 2,
-      clipBehavior: Clip.none, // <-- important: don't clip the Video view
+      clipBehavior: Clip.none,
       child: Column(
         children: [
           Expanded(
@@ -546,21 +650,21 @@ class _VideoPanelState extends State<_VideoPanel> {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  // Video or empty state
                   if (videoPath != null)
-                    // Give it real size & avoid clipping parents
                     Container(
+                      key: ValueKey(videoPath),
                       color: Colors.black,
-                      child: Video(
-                        controller: _videoController,
-                        fit: BoxFit.contain, // <-- ensure it scales visibly
+                      child: SizedBox.expand(
+                        child: Video(
+                          controller: _videoController,
+                          fit: BoxFit.contain,
+                        ),
                       ),
                     )
                   else
-                    // Empty state: allow scroll so it won't overflow vertically
                     Container(
                       color: _dragging
-                          ? Colors.indigo.withOpacity(0.08)
+                          ? Colors.indigo.withValues(alpha: 0.08)
                           : Colors.black,
                       child: LayoutBuilder(
                         builder: (context, constraints) {
@@ -587,7 +691,7 @@ class _VideoPanelState extends State<_VideoPanel> {
                                     ),
                                     const SizedBox(height: 8),
                                     Text(
-                                      'Playback powered by media_kit',
+                                      'May need to drag video twice for visual playback',
                                       textAlign: TextAlign.center,
                                       style: Theme.of(context)
                                           .textTheme
@@ -595,10 +699,9 @@ class _VideoPanelState extends State<_VideoPanel> {
                                           ?.copyWith(color: Colors.white70),
                                     ),
                                     const SizedBox(height: 12),
-                                    // Status pill only when empty state is shown
                                     DecoratedBox(
                                       decoration: BoxDecoration(
-                                        color: Colors.white.withOpacity(0.08),
+                                        color: Colors.white.withValues(alpha: 0.08),
                                         borderRadius: BorderRadius.circular(12),
                                       ),
                                       child: Padding(
@@ -624,7 +727,6 @@ class _VideoPanelState extends State<_VideoPanel> {
                       ),
                     ),
 
-                  // Loading overlay while opening a file
                   if (_opening)
                     Container(
                       color: Colors.black54,
@@ -635,7 +737,6 @@ class _VideoPanelState extends State<_VideoPanel> {
             ),
           ),
 
-          // Controls (Wrap so they don't overflow)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             child: Wrap(
@@ -668,7 +769,6 @@ class _VideoPanelState extends State<_VideoPanel> {
                   child: const Text('+ speed'),
                 ),
 
-                // Live speed indicator
                 Chip(label: Text('Speed: x${_rate.toStringAsFixed(2)}')),
 
                 if (videoPath != null)
@@ -824,7 +924,7 @@ class _MouseSummaryCard extends StatelessWidget {
     final theme = Theme.of(context);
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: Colors.indigo.withOpacity(0.05),
+        color: Colors.indigo.withValues(alpha: 0.05),
         borderRadius: BorderRadius.circular(16),
       ),
       child: Padding(
@@ -880,32 +980,37 @@ class _KeyboardLegend extends StatelessWidget {
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
             Text(
               'Keyboard shortcuts (${protocol.label})',
               style: Theme.of(context).textTheme.titleLarge,
             ),
             const SizedBox(height: 12),
-            Wrap(
-              spacing: 24,
-              runSpacing: 12,
-              children: grouped.entries.map((entry) {
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      entry.key,
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 6),
-                    ...entry.value.map(
-                      (binding) => Text(
-                        '${binding.keyLabel} → ${_chamberLabel(protocol, binding.chamber)}',
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Wrap(
+                spacing: 24,
+                runSpacing: 12,
+                children: grouped.entries.map((entry) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        entry.key,
+                        style: Theme.of(context).textTheme.titleMedium,
                       ),
-                    ),
-                  ],
-                );
-              }).toList(),
+                      const SizedBox(height: 6),
+                      ...entry.value.map(
+                        (binding) => Text(
+                          '${binding.keyLabel} → ${_chamberLabel(protocol, binding.chamber)}',
+                        ),
+                      ),
+                    ],
+                  );
+                }).toList(),
+              ),
             ),
           ],
         ),
@@ -925,37 +1030,30 @@ class _RemapKeysDialog extends StatefulWidget {
 }
 
 class _RemapKeysDialogState extends State<_RemapKeysDialog> {
+  _RemapKeysDialogState();
+
   late Map<String, Map<Chamber, LogicalKeyboardKey>> _workingMap;
   String? _listeningMouseId;
   Chamber? _listeningChamber;
   String? _error;
   final FocusNode _focusNode = FocusNode();
-  StreamSubscription<double>? _rateSub; // <-- Add this line
 
-  double _rate = 1.0; // <-- Add this line to define _rate
-
-  // Add the missing Player instance
   late final Player _player = Player();
+
+  bool get _isListening => _listeningMouseId != null && _listeningChamber != null;
 
   @override
   void initState() {
     super.initState();
     _workingMap = _cloneKeyMap(widget.session.keyMap);
-    _rateSub = _player.stream.rate.listen((r) {
-      setState(() => _rate = r);
-    });
   }
 
   @override
   void dispose() {
     _focusNode.dispose();
-    _rateSub?.cancel();
     _player.dispose();
     super.dispose();
   }
-
-  bool get _isListening =>
-      _listeningMouseId != null && _listeningChamber != null;
 
   void _startListening(String mouseId, Chamber chamber) {
     setState(() {
@@ -994,8 +1092,8 @@ class _RemapKeysDialogState extends State<_RemapKeysDialog> {
     return null;
   }
 
-  void _handleKey(RawKeyEvent event) {
-    if (!_isListening || event is! RawKeyDownEvent) {
+  void _handleKey(KeyEvent event) {
+    if (!_isListening || event is! KeyDownEvent) {
       return;
     }
 
@@ -1006,9 +1104,9 @@ class _RemapKeysDialogState extends State<_RemapKeysDialog> {
       return;
     }
 
-    if (event.isControlPressed ||
-        event.isMetaPressed ||
-        event.isAltPressed ||
+    if (HardwareKeyboard.instance.isControlPressed ||
+        HardwareKeyboard.instance.isMetaPressed ||
+        HardwareKeyboard.instance.isAltPressed ||
         _isModifierKey(key)) {
       return;
     }
@@ -1046,10 +1144,10 @@ class _RemapKeysDialogState extends State<_RemapKeysDialog> {
     final theme = Theme.of(context);
     return AlertDialog(
       title: const Text('Remap shortcuts'),
-      content: RawKeyboardListener(
+      content: KeyboardListener(
         focusNode: _focusNode,
         autofocus: true,
-        onKey: _handleKey,
+        onKeyEvent: _handleKey,
         child: SizedBox(
           width: 520,
           child: Column(
@@ -1357,4 +1455,92 @@ String _formatDuration(Duration duration) {
 
 extension<T> on List<T> {
   T? get firstOrNull => isEmpty ? null : first;
+}
+
+class _RenameMouseDialog extends StatefulWidget {
+  const _RenameMouseDialog({required this.session, required this.controller});
+
+  final SessionState session;
+  final SessionController controller;
+
+  @override
+  State<_RenameMouseDialog> createState() => _RenameMouseDialogState();
+}
+
+class _RenameMouseDialogState extends State<_RenameMouseDialog> {
+  late Map<int, String> _newNames;
+
+  @override
+  void initState() {
+    super.initState();
+    _newNames = {for (var i = 0; i < _mouseIds.length; i++) i: _mouseIds[i]};
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return AlertDialog(
+      title: const Text('Rename mice'),
+      content: SizedBox(
+        width: 400,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'Enter new names for each mouse:',
+              style: theme.textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 16),
+            ..._mouseIds.asMap().entries.map((entry) {
+              final index = entry.key;
+              final currentName = entry.value;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: TextField(
+                  onChanged: (value) {
+                    setState(() => _newNames[index] = value);
+                  },
+                  decoration: InputDecoration(
+                    labelText: currentName,
+                    hintText: currentName,
+                    border: const OutlineInputBorder(),
+                  ),
+                  controller: TextEditingController(text: _newNames[index]),
+                ),
+              );
+            }),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () {
+            // Update the mutable _mouseIds list
+            for (var i = 0; i < _mouseIds.length; i++) {
+              _mouseIds[i] = _newNames[i] ?? _mouseIds[i];
+            }
+
+            // Update key mappings with new names
+            final updatedKeyMap = <String, Map<Chamber, LogicalKeyboardKey>>{};
+            for (var i = 0; i < _mouseIds.length; i++) {
+              final oldId = ['Mouse A', 'Mouse B', 'Mouse C'][i];
+              final newId = _mouseIds[i];
+              final bindings = widget.session.keyMap[oldId];
+              if (bindings != null) {
+                updatedKeyMap[newId] = Map.from(bindings);
+              }
+            }
+
+            widget.controller.setKeyBindings(updatedKeyMap);
+            Navigator.of(context).pop();
+          },
+          child: const Text('Apply'),
+        ),
+      ],
+    );
+  }
 }

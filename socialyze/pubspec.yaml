@@ -32,16 +32,18 @@ dependencies:
   flutter:
     sdk: flutter
   flutter_riverpod: ^2.5.1
-  media_kit: any
-  media_kit_video: any
+  media_kit: ^1.2.0
+  media_kit_video: ^1.3.0
   # one of these per platform:
-  media_kit_libs_windows_video: any
-  media_kit_libs_macos_video: any
-  media_kit_libs_linux: any
+  media_kit_libs_windows_video: ^1.0.0
+  media_kit_libs_macos_video: ^1.1.0
+  media_kit_libs_linux: ^1.2.0
   desktop_drop: any            # drag & drop
+  file_picker: any             # file save dialogs
   drift: any                   # ORM for SQLite
   sqlite3_flutter_libs: any
   path_provider: any
+  window_manager: any          # manage window size and constraints
 
 dev_dependencies:
   flutter_test:

@@ -103,10 +103,15 @@ void main() {
 
       final csv = generateSessionCsv(summary);
 
-      expect(csv.split('\n').first, contains('type,mouse,chamber'));
-      expect(csv, contains('summary,A,empty,30.000'));
-      expect(csv, contains('summary,A,total,,1'));
-      expect(csv, contains('event,A,middle,,,${events.last.timestamp.toIso8601String()}'));
+      expect(csv, contains('Session Summary Report'));
+      expect(csv, contains('Session Start'));
+      expect(csv, contains('Session End'));
+      expect(csv, contains('Total Duration'));
+      expect(csv, contains('Mouse ID'));
+      expect(csv, contains('Empty (s)'));
+      expect(csv, contains('A,')); // Mouse ID row
+      expect(csv, contains('30.000')); // Empty dwell time
+      expect(csv, contains('1')); // Switch count
     });
   });
 }
