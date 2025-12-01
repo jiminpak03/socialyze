@@ -149,31 +149,87 @@ SessionSummary analyzeSession(
   );
 }
 
-/// Generates a CSV export combining per-mouse summaries and raw events.
+/// Generates a CSV export with session summary data in a clean, organized format.
 String generateSessionCsv(SessionSummary summary) {
-  final buffer = StringBuffer()
-    ..writeln(
-      'type,mouse,chamber,duration_seconds,switch_count,timestamp_iso8601',
-    );
-
-  summary.mouseSummaries.forEach((mouseId, mouseSummary) {
-    for (final chamber in Chamber.values) {
-      final duration = mouseSummary.dwellTime(chamber);
-      final seconds = duration.inMilliseconds / 1000;
-      buffer.writeln(
-        'summary,$mouseId,${chamber.name},${seconds.toStringAsFixed(3)},,',
-      );
-    }
+  final buffer = StringBuffer();
+  
+  // Header section
+  buffer.writeln('Session Summary Report');
+  buffer.writeln('');
+  
+  // Session metadata
+  buffer.writeln('Session Start,${summary.sessionStart.toIso8601String()}');
+  buffer.writeln('Session End,${summary.sessionEnd.toIso8601String()}');
+  buffer.writeln('Total Duration,${_formatDuration(summary.duration)}');
+  buffer.writeln('');
+  
+  // Summary statistics per mouse - in spreadsheet-friendly format
+  buffer.writeln('Mouse ID,Empty (s),Middle (s),Stranger (s),Total Dwell (s),Switch Count');
+  
+  for (final entry in summary.mouseSummaries.entries) {
+    final mouseId = entry.key;
+    final mouseSummary = entry.value;
+    
+    final emptyDwell = mouseSummary.dwellTime(Chamber.empty).inMilliseconds / 1000;
+    final middleDwell = mouseSummary.dwellTime(Chamber.middle).inMilliseconds / 1000;
+    final strangerDwell = mouseSummary.dwellTime(Chamber.stranger).inMilliseconds / 1000;
+    final totalDwell = mouseSummary.totalDwell.inMilliseconds / 1000;
+    
     buffer.writeln(
-      'summary,$mouseId,total,,${mouseSummary.switchCount},',
-    );
-  });
-
-  for (final event in summary.events) {
-    buffer.writeln(
-      'event,${event.mouseId},${event.chamber.name},,,${event.timestamp.toIso8601String()}',
+      '$mouseId,${emptyDwell.toStringAsFixed(3)},${middleDwell.toStringAsFixed(3)},${strangerDwell.toStringAsFixed(3)},${totalDwell.toStringAsFixed(3)},${mouseSummary.switchCount}',
     );
   }
+  
+  return buffer.toString();
+}
 
+String _formatDuration(Duration duration) {
+  final hours = duration.inHours;
+  final minutes = duration.inMinutes.remainder(60);
+  final seconds = duration.inSeconds.remainder(60);
+  final buffer = StringBuffer();
+  if (hours > 0) {
+    buffer.write(hours.toString().padLeft(2, '0'));
+    buffer.write('h ');
+  }
+  buffer.write(minutes.toString().padLeft(2, '0'));
+  buffer.write('m ');
+  buffer.write(seconds.toString().padLeft(2, '0'));
+  buffer.write('s');
+  return buffer.toString();
+}
+
+/// Generates an Excel-compatible spreadsheet data as TSV (tab-separated values).
+/// Excel can open TSV files natively and will format them as a proper spreadsheet.
+String generateSessionExcel(SessionSummary summary) {
+  final buffer = StringBuffer();
+  
+  // Title section
+  buffer.writeln('Session Summary Report');
+  buffer.writeln('');
+  
+  // Session metadata
+  buffer.writeln('Session Start\t${summary.sessionStart.toIso8601String()}');
+  buffer.writeln('Session End\t${summary.sessionEnd.toIso8601String()}');
+  buffer.writeln('Total Duration\t${_formatDuration(summary.duration)}');
+  buffer.writeln('');
+  
+  // Summary statistics per mouse - in spreadsheet-friendly format
+  buffer.writeln('Mouse ID\tEmpty (s)\tMiddle (s)\tStranger (s)\tTotal Dwell (s)\tSwitch Count');
+  
+  for (final entry in summary.mouseSummaries.entries) {
+    final mouseId = entry.key;
+    final mouseSummary = entry.value;
+    
+    final emptyDwell = mouseSummary.dwellTime(Chamber.empty).inMilliseconds / 1000;
+    final middleDwell = mouseSummary.dwellTime(Chamber.middle).inMilliseconds / 1000;
+    final strangerDwell = mouseSummary.dwellTime(Chamber.stranger).inMilliseconds / 1000;
+    final totalDwell = mouseSummary.totalDwell.inMilliseconds / 1000;
+    
+    buffer.writeln(
+      '$mouseId\t${emptyDwell.toStringAsFixed(3)}\t${middleDwell.toStringAsFixed(3)}\t${strangerDwell.toStringAsFixed(3)}\t${totalDwell.toStringAsFixed(3)}\t${mouseSummary.switchCount}',
+    );
+  }
+  
   return buffer.toString();
 }
