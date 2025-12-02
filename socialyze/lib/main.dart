@@ -1,7 +1,5 @@
 import 'dart:async';
-import 'dart:io';
 import 'package:desktop_drop/desktop_drop.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -10,6 +8,31 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'analysis/session_analyzer.dart';
+import 'src/session_controller.dart';
+import 'src/chamber_visualization.dart';
+import 'src/session_database.dart';
+
+// ============================================================================
+// Extensions
+// ============================================================================
+
+extension on Protocol {
+  String get label {
+    switch (this) {
+      case Protocol.socialInteraction:
+        return 'Social Interaction';
+      case Protocol.socialNovelty:
+        return 'Social Novelty';
+    }
+  }
+}
+
+// ============================================================================
+// Global State & Constants
+// ============================================================================
+
+/// Dark mode provider for app-wide theme control
+final darkModeProvider = StateProvider<bool>((ref) => false);
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -28,11 +51,13 @@ Future<void> main() async {
   runApp(const ProviderScope(child: SociaLyzeApp()));
 }
 
-class SociaLyzeApp extends StatelessWidget {
+class SociaLyzeApp extends ConsumerWidget {
   const SociaLyzeApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isDarkMode = ref.watch(darkModeProvider);
+    
     return MaterialApp(
       title: 'SociaLyze',
       theme: ThemeData(
@@ -40,53 +65,37 @@ class SociaLyzeApp extends StatelessWidget {
         useMaterial3: true,
         brightness: Brightness.light,
       ),
+      darkTheme: ThemeData(
+        colorSchemeSeed: Colors.indigo,
+        useMaterial3: true,
+        brightness: Brightness.dark,
+      ),
+      themeMode: isDarkMode ? ThemeMode.dark : ThemeMode.light,
       home: const SessionHome(),
     );
   }
 }
 
-final sessionControllerProvider =
-    StateNotifierProvider<SessionController, SessionState>((ref) {
-  return SessionController();
-});
-
-class SessionEvent {
-  SessionEvent({
-    required this.mouseId,
-    required this.chamber,
-    required this.timestamp,
-  });
-
-  final String mouseId;
-  final Chamber chamber;
-  final DateTime timestamp;
-}
-
-enum Protocol {
-  socialInteraction,
-  socialNovelty,
-}
-
-extension on Protocol {
-  String get label {
-    switch (this) {
-      case Protocol.socialInteraction:
-        return 'Social Interaction';
-      case Protocol.socialNovelty:
-        return 'Social Novelty';
-    }
-  }
-}
-
-const _copySentinel = Object();
-
+/// Global mutable list of mouse IDs for naming and key binding.
+/// Updated via the "Rename mice" dialog.
 List<String> _mouseIds = ['Mouse A', 'Mouse B', 'Mouse C'];
+
+/// Ordered list of chamber types for consistent UI display.
 const List<Chamber> _chamberOrder = [
   Chamber.empty,
   Chamber.middle,
   Chamber.stranger,
 ];
 
+// ============================================================================
+// Keyboard Shortcut Configuration
+// ============================================================================
+
+/// Builds default key bindings for each mouse and chamber.
+/// Maps numpad keys to mice/chambers:
+/// - Mouse A: 7/4/1 (empty/middle/stranger)
+/// - Mouse B: 8/5/2 (empty/middle/stranger)
+/// - Mouse C: 9/6/3 (empty/middle/stranger)
 Map<String, Map<Chamber, LogicalKeyboardKey>> _defaultKeyMap() {
   const keyGrid = <List<LogicalKeyboardKey>>[
     [
@@ -119,16 +128,7 @@ Map<String, Map<Chamber, LogicalKeyboardKey>> _defaultKeyMap() {
   return map;
 }
 
-Map<String, Map<Chamber, LogicalKeyboardKey>> _freezeKeyMap(
-  Map<String, Map<Chamber, LogicalKeyboardKey>>? map,
-) {
-  final source = map ?? _defaultKeyMap();
-  return Map.unmodifiable({
-    for (final entry in source.entries)
-      entry.key: Map<Chamber, LogicalKeyboardKey>.unmodifiable(entry.value),
-  });
-}
-
+/// Deep clones key mappings for modification.
 Map<String, Map<Chamber, LogicalKeyboardKey>> _cloneKeyMap(
   Map<String, Map<Chamber, LogicalKeyboardKey>> map,
 ) {
@@ -138,209 +138,9 @@ Map<String, Map<Chamber, LogicalKeyboardKey>> _cloneKeyMap(
   };
 }
 
-class SessionState {
-  SessionState({
-    required this.protocol,
-    this.isRecording = false,
-    this.startedAt,
-    this.stoppedAt,
-    List<SessionEvent>? events,
-    this.videoPath,
-    this.summary,
-    Map<String, Map<Chamber, LogicalKeyboardKey>>? keyMap,
-  })  : events =
-            events == null ? const [] : List<SessionEvent>.unmodifiable(events),
-        keyMap = _freezeKeyMap(keyMap);
-
-  final Protocol protocol;
-  final bool isRecording;
-  final DateTime? startedAt;
-  final DateTime? stoppedAt;
-  final List<SessionEvent> events;
-  final String? videoPath;
-  final SessionSummary? summary;
-  final Map<String, Map<Chamber, LogicalKeyboardKey>> keyMap;
-
-  SessionState copyWith({
-    Protocol? protocol,
-    bool? isRecording,
-    Object? startedAt = _copySentinel,
-    Object? stoppedAt = _copySentinel,
-    List<SessionEvent>? events,
-    Object? videoPath = _copySentinel,
-    Object? summary = _copySentinel,
-    bool clearSummary = false,
-    Map<String, Map<Chamber, LogicalKeyboardKey>>? keyMap,
-  }) {
-    return SessionState(
-      protocol: protocol ?? this.protocol,
-      isRecording: isRecording ?? this.isRecording,
-      startedAt:
-          startedAt == _copySentinel ? this.startedAt : startedAt as DateTime?,
-      stoppedAt:
-          stoppedAt == _copySentinel ? this.stoppedAt : stoppedAt as DateTime?,
-      events: events ?? this.events,
-      videoPath:
-          videoPath == _copySentinel ? this.videoPath : videoPath as String?,
-      summary: clearSummary
-          ? null
-          : summary == _copySentinel
-              ? this.summary
-              : summary as SessionSummary?,
-      keyMap: keyMap ?? this.keyMap,
-    );
-  }
-}
-
-class SessionController extends StateNotifier<SessionState> {
-  SessionController()
-      : super(SessionState(protocol: Protocol.socialInteraction));
-
-  void setProtocol(Protocol protocol) {
-    state = state.copyWith(protocol: protocol);
-  }
-
-  void startSession() {
-    if (state.isRecording) {
-      return;
-    }
-    final now = DateTime.now();
-    state = state.copyWith(
-      isRecording: true,
-      startedAt: now,
-      stoppedAt: null,
-      events: <SessionEvent>[],
-      clearSummary: true,
-    );
-  }
-
-  void stopSession() {
-    if (!state.isRecording) {
-      return;
-    }
-
-    final stoppedAt = DateTime.now();
-    SessionSummary? summary;
-    if (state.events.isNotEmpty) {
-      final sessionEnd = stoppedAt.isBefore(state.events.last.timestamp)
-          ? state.events.last.timestamp
-          : stoppedAt;
-      summary = analyzeSession(
-        state.events
-            .map(
-              (event) => ChamberEvent(
-                mouseId: event.mouseId,
-                chamber: event.chamber,
-                timestamp: event.timestamp,
-              ),
-            )
-            .toList(),
-        sessionEnd: sessionEnd,
-      );
-    }
-
-    state = state.copyWith(
-      isRecording: false,
-      stoppedAt: stoppedAt,
-      summary: summary,
-    );
-  }
-
-  void clearSession() {
-    state = SessionState(
-      protocol: state.protocol,
-      videoPath: state.videoPath,
-      keyMap: state.keyMap,
-    );
-  }
-
-  void logEvent(String mouseId, Chamber chamber) {
-    if (!state.isRecording) {
-      return;
-    }
-    final event = SessionEvent(
-      mouseId: mouseId,
-      chamber: chamber,
-      timestamp: DateTime.now(),
-    );
-    state = state.copyWith(
-      events: <SessionEvent>[...state.events, event],
-      clearSummary: true,
-    );
-  }
-
-  void attachVideo(String? path) {
-    state = state.copyWith(videoPath: path);
-  }
-
-  String? exportCsv() {
-    final summary = state.summary;
-    if (summary == null) {
-      return null;
-    }
-    return generateSessionCsv(summary);
-  }
-
-  Future<bool> exportSummaryToFile() async {
-    final summary = state.summary;
-    if (summary == null) {
-      return false;
-    }
-    
-    try {
-      final csv = generateSessionCsv(summary);
-      final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
-      
-      final result = await FilePicker.platform.saveFile(
-        fileName: 'socialyze_summary_$timestamp.csv',
-        allowedExtensions: ['csv'],
-        type: FileType.custom,
-      );
-      
-      if (result != null) {
-        final file = File(result);
-        await file.writeAsString(csv);
-        return true;
-      }
-      return false;
-    } catch (e) {
-      return false;
-    }
-  }
-
-  void setKeyBindings(
-    Map<String, Map<Chamber, LogicalKeyboardKey>> keyMap,
-  ) {
-    state = state.copyWith(keyMap: keyMap);
-  }
-
-    Future<bool> exportSummaryAsExcel() async {
-      final summary = state.summary;
-      if (summary == null) {
-        return false;
-      }
-    
-      try {
-        final tsv = generateSessionExcel(summary);
-        final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
-      
-        final result = await FilePicker.platform.saveFile(
-          fileName: 'socialyze_summary_$timestamp.xlsx',
-          allowedExtensions: ['xlsx'],
-          type: FileType.custom,
-        );
-      
-        if (result != null) {
-          final file = File(result);
-          await file.writeAsString(tsv);
-          return true;
-        }
-        return false;
-      } catch (e) {
-        return false;
-      }
-    }
-}
+// ============================================================================
+// Session Home Screen
+// ============================================================================
 
 class SessionHome extends ConsumerStatefulWidget {
   const SessionHome({super.key});
@@ -394,7 +194,7 @@ class _SessionHomeState extends ConsumerState<SessionHome> {
       },
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('SociaLyze Session Recorder'),
+          title: const Text('SociaLyze 3 Chamber Test Helper'),
           actions: [
             if (session.isRecording)
               Padding(
@@ -439,7 +239,17 @@ class _SessionHomeState extends ConsumerState<SessionHome> {
                     const SizedBox(width: 24),
                     Expanded(
                       flex: 2,
-                      child: _SummaryPanel(session: session),
+                      child: Column(
+                        children: [
+                          Expanded(
+                            child: _SummaryPanel(session: session),
+                          ),
+                          const SizedBox(height: 24),
+                          Expanded(
+                            child: _SessionHistoryPanel(),
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ),
@@ -458,14 +268,19 @@ class _SessionHomeState extends ConsumerState<SessionHome> {
   }
 }
 
-class _SessionToolbar extends StatelessWidget {
+// ============================================================================
+// Toolbar Widget: Control Recording, Protocol, Export & Settings
+// ============================================================================
+
+class _SessionToolbar extends ConsumerWidget {
   const _SessionToolbar({required this.session, required this.controller});
 
   final SessionState session;
   final SessionController controller;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isDarkMode = ref.watch(darkModeProvider);
     return Wrap(
       spacing: 16,
       crossAxisAlignment: WrapCrossAlignment.center,
@@ -497,7 +312,12 @@ class _SessionToolbar extends StatelessWidget {
         OutlinedButton.icon(
           icon: const Icon(Icons.stop),
           label: const Text('Stop session'),
-          onPressed: session.isRecording ? controller.stopSession : null,
+          onPressed: session.isRecording
+              ? () async {
+                  await controller.stopSession();
+                  ref.invalidate(sessionHistoryProvider);
+                }
+              : null,
         ),
         OutlinedButton.icon(
           icon: const Icon(Icons.delete_outline),
@@ -542,27 +362,6 @@ class _SessionToolbar extends StatelessWidget {
                   );
                 },
         ),
-          ElevatedButton.icon(
-            icon: const Icon(Icons.file_download),
-            label: const Text('Export as Excel'),
-            onPressed: session.summary == null
-                ? null
-                : () async {
-                    final success = await controller.exportSummaryAsExcel();
-                    if (!context.mounted) return;
-                  
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text(
-                          success
-                              ? 'Excel file exported successfully'
-                              : 'Export cancelled or failed',
-                        ),
-                        duration: const Duration(seconds: 2),
-                      ),
-                    );
-                  },
-          ),
           OutlinedButton.icon(
             icon: const Icon(Icons.edit),
             label: const Text('Rename mice'),
@@ -583,10 +382,21 @@ class _SessionToolbar extends StatelessWidget {
             'Started at: ${_formatTime(session.startedAt!)}',
             style: Theme.of(context).textTheme.bodyMedium,
           ),
+        IconButton(
+          icon: Icon(isDarkMode ? Icons.light_mode : Icons.dark_mode),
+          tooltip: isDarkMode ? 'Light Mode' : 'Dark Mode',
+          onPressed: () {
+            ref.read(darkModeProvider.notifier).state = !isDarkMode;
+          },
+        ),
       ],
     );
   }
 }
+
+// ============================================================================
+// Video Panel: Media Playback & File Selection
+// ============================================================================
 
 class _VideoPanel extends StatefulWidget {
   const _VideoPanel({required this.session, required this.controller});
@@ -792,6 +602,10 @@ class _VideoPanelState extends State<_VideoPanel> {
   }
 }
 
+// ============================================================================
+// Event Log: Real-time Event Display During Recording
+// ============================================================================
+
 class _EventLog extends StatelessWidget {
   const _EventLog({required this.session});
 
@@ -848,6 +662,10 @@ class _EventLog extends StatelessWidget {
   }
 }
 
+// ============================================================================
+// Summary Panel: Post-Session Analytics & Visualization
+// ============================================================================
+
 class _SummaryPanel extends StatelessWidget {
   const _SummaryPanel({required this.session});
 
@@ -890,10 +708,31 @@ class _SummaryPanel extends StatelessWidget {
                       ...summary.mouseSummaries.entries.map(
                         (entry) => Padding(
                           padding: const EdgeInsets.only(bottom: 16),
-                          child: _MouseSummaryCard(
-                            mouseId: entry.key,
-                            summary: entry.value,
-                            protocol: session.protocol,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              // Chamber visualization for this mouse
+                              SizedBox(
+                                height: 300,
+                                width: double.infinity,
+                                child: Card(
+                                  elevation: 1,
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(12),
+                                    child: ChamberVisualization(
+                                      summary: entry.value,
+                                      protocol: session.protocol,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              _MouseSummaryCard(
+                                mouseId: entry.key,
+                                summary: entry.value,
+                                protocol: session.protocol,
+                              ),
+                            ],
                           ),
                         ),
                       ),
@@ -907,6 +746,10 @@ class _SummaryPanel extends StatelessWidget {
     );
   }
 }
+
+// ============================================================================
+// Mouse Summary Card: Per-Mouse Chamber Dwell Stats
+// ============================================================================
 
 class _MouseSummaryCard extends StatelessWidget {
   const _MouseSummaryCard({
@@ -960,6 +803,10 @@ class _MouseSummaryCard extends StatelessWidget {
     );
   }
 }
+
+// ============================================================================
+// Keyboard Legend: Visual Reference for Key Bindings
+// ============================================================================
 
 class _KeyboardLegend extends StatelessWidget {
   const _KeyboardLegend({required this.protocol, required this.bindings});
@@ -1018,6 +865,139 @@ class _KeyboardLegend extends StatelessWidget {
     );
   }
 }
+
+// ============================================================================
+// Session History Panel: View & Delete Previous Sessions
+// ============================================================================
+
+class _SessionHistoryPanel extends ConsumerWidget {
+  const _SessionHistoryPanel();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final historyAsync = ref.watch(sessionHistoryProvider);
+
+    return Card(
+      elevation: 2,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Session history',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: 12),
+            Expanded(
+              child: historyAsync.when(
+                data: (sessions) {
+                  if (sessions.isEmpty) {
+                    return _EmptyState(message: 'No sessions recorded yet.');
+                  }
+                  return ListView.separated(
+                    itemCount: sessions.length,
+                    separatorBuilder: (_, __) => const Divider(),
+                    itemBuilder: (context, index) {
+                      final session = sessions[sessions.length - 1 - index];
+                      return _SessionHistoryItem(session: session);
+                    },
+                  );
+                },
+                loading: () => const Center(
+                  child: CircularProgressIndicator(),
+                ),
+                error: (error, stack) => Center(
+                  child: Text('Error loading history: $error'),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// Session History Item: Individual Session Record
+// ============================================================================
+
+class _SessionHistoryItem extends ConsumerWidget {
+  const _SessionHistoryItem({required this.session});
+
+  final SessionHistoryEntry session;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final timeStr =
+        '${session.startedAt.hour.toString().padLeft(2, '0')}:${session.startedAt.minute.toString().padLeft(2, '0')}';
+    final durationStr = _formatDuration(session.duration);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  session.protocol,
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '$timeStr • $durationStr • ${session.mouseCount} mice',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+          PopupMenuButton(
+            itemBuilder: (context) => [
+              PopupMenuItem(
+                child: const Text('Delete'),
+                onTap: () async {
+                  final confirmed = await showDialog<bool>(
+                    context: context,
+                    builder: (context) => AlertDialog(
+                      title: const Text('Delete session?'),
+                      content: Text(
+                        'Delete session from ${session.startedAt.toLocal()}?',
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, false),
+                          child: const Text('Cancel'),
+                        ),
+                        FilledButton(
+                          onPressed: () => Navigator.pop(context, true),
+                          child: const Text('Delete'),
+                        ),
+                      ],
+                    ),
+                  );
+
+                  if (confirmed == true) {
+                    await SessionHistoryDatabase.deleteSession(session.id);
+                    if (context.mounted) {
+                      ref.invalidate(sessionHistoryProvider);
+                    }
+                  }
+                },
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// Remap Keys Dialog: Interactive Key Binding Configuration
+// ============================================================================
 
 class _RemapKeysDialog extends StatefulWidget {
   const _RemapKeysDialog({required this.session, required this.controller});
@@ -1237,6 +1217,10 @@ class _RemapKeysDialogState extends State<_RemapKeysDialog> {
   }
 }
 
+// ============================================================================
+// Key Remap Section: Per-Mouse Key Binding Interface
+// ============================================================================
+
 class _KeyRemapSection extends StatelessWidget {
   const _KeyRemapSection({
     required this.mouseId,
@@ -1297,6 +1281,10 @@ class _BindingTarget {
   final String mouseId;
   final Chamber chamber;
 }
+
+// ============================================================================
+// Empty State: Placeholder Message Widgets
+// ============================================================================
 
 class _EmptyState extends StatelessWidget {
   const _EmptyState({required this.message});
@@ -1457,6 +1445,10 @@ extension<T> on List<T> {
   T? get firstOrNull => isEmpty ? null : first;
 }
 
+// ============================================================================
+// Rename Mouse Dialog: Interactive Mouse ID Editor
+// ============================================================================
+
 class _RenameMouseDialog extends StatefulWidget {
   const _RenameMouseDialog({required this.session, required this.controller});
 
@@ -1469,11 +1461,26 @@ class _RenameMouseDialog extends StatefulWidget {
 
 class _RenameMouseDialogState extends State<_RenameMouseDialog> {
   late Map<int, String> _newNames;
+  late Map<int, TextEditingController> _controllers;
 
   @override
   void initState() {
     super.initState();
     _newNames = {for (var i = 0; i < _mouseIds.length; i++) i: _mouseIds[i]};
+    // Create one TextEditingController per mouse field, initialized with current name
+    _controllers = {
+      for (var i = 0; i < _mouseIds.length; i++)
+        i: TextEditingController(text: _mouseIds[i])
+    };
+  }
+
+  @override
+  void dispose() {
+    // Clean up controllers when dialog closes
+    for (final controller in _controllers.values) {
+      controller.dispose();
+    }
+    super.dispose();
   }
 
   @override
@@ -1494,9 +1501,11 @@ class _RenameMouseDialogState extends State<_RenameMouseDialog> {
             ..._mouseIds.asMap().entries.map((entry) {
               final index = entry.key;
               final currentName = entry.value;
+              final controller = _controllers[index]!;
               return Padding(
                 padding: const EdgeInsets.only(bottom: 12),
                 child: TextField(
+                  controller: controller,
                   onChanged: (value) {
                     setState(() => _newNames[index] = value);
                   },
@@ -1505,7 +1514,6 @@ class _RenameMouseDialogState extends State<_RenameMouseDialog> {
                     hintText: currentName,
                     border: const OutlineInputBorder(),
                   ),
-                  controller: TextEditingController(text: _newNames[index]),
                 ),
               );
             }),
@@ -1519,9 +1527,12 @@ class _RenameMouseDialogState extends State<_RenameMouseDialog> {
         ),
         FilledButton(
           onPressed: () {
-            // Update the mutable _mouseIds list
+            // Update the mutable _mouseIds list with controller values
             for (var i = 0; i < _mouseIds.length; i++) {
-              _mouseIds[i] = _newNames[i] ?? _mouseIds[i];
+              final newName = _controllers[i]?.text.trim();
+              if (newName != null && newName.isNotEmpty) {
+                _mouseIds[i] = newName;
+              }
             }
 
             // Update key mappings with new names
