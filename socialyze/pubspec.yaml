@@ -43,6 +43,7 @@ dependencies:
   drift: any                   # ORM for SQLite
   sqlite3_flutter_libs: any
   path_provider: any
+  path: any                    # path manipulation utilities
   window_manager: any          # manage window size and constraints
 
 dev_dependencies:
