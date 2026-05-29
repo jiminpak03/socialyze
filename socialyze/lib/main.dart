@@ -515,18 +515,21 @@ class _VideoPanelState extends State<_VideoPanel> {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  // The video surface stays mounted at all times so its
-                  // texture is created up front; this avoids the previous
-                  // "drag twice" issue where the first video failed to render.
-                  Container(
-                    color: Colors.black,
-                    child: SizedBox.expand(
-                      child: Video(
-                        controller: _videoController,
-                        fit: BoxFit.contain,
+                  // The video surface (and the underlying mpv render context)
+                  // is only mounted once a video has actually been opened.
+                  // Mounting it at startup forces mpv to create its render
+                  // context before any media is loaded, which aborts on some
+                  // macOS configurations.
+                  if (videoPath != null)
+                    Container(
+                      color: Colors.black,
+                      child: SizedBox.expand(
+                        child: Video(
+                          controller: _videoController,
+                          fit: BoxFit.contain,
+                        ),
                       ),
                     ),
-                  ),
 
                   // Drop hint overlay, shown only until a video is loaded.
                   if (videoPath == null)
