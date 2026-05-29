@@ -1,6 +1,8 @@
 # Miscellaneous
 *.class
 *.lock
+# Keep app dependency lockfile for reproducible CI builds
+!**/pubspec.lock
 *.log
 *.pyc
 *.swp
