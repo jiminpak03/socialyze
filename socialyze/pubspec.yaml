@@ -40,9 +40,7 @@ dependencies:
   media_kit_libs_linux: ^1.2.0
   desktop_drop: any            # drag & drop
   file_picker: any             # file save dialogs
-  drift: any                   # ORM for SQLite
-  sqlite3_flutter_libs: any
-  path_provider: any
+  path_provider: any           # locate app documents directory
   path: any                    # path manipulation utilities
   window_manager: any          # manage window size and constraints
 

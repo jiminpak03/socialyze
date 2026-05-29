@@ -11,8 +11,10 @@
 * **Remappable key bindings** for recording — users can configure their own keys if they don’t have a numpad
 * **Multi-mouse support** (track up to 3 mice simultaneously)
 * **Automatic dwell time & switch count summaries**
-* **Export to CSV** for downstream analysis in Excel or R
-* **Local SQLite database** (via Drift) to persist sessions and re-load past experiments
+* **Movement validation** that blocks impossible chamber transitions (an outer chamber directly to the other without crossing the middle)
+* **Persistent settings** — theme, mouse names, and key bindings are saved between launches
+* **Export to CSV or Excel** for downstream analysis in Excel or R
+* **Local session history** persisted on disk to re-load past experiments
 
 ---
 
@@ -20,9 +22,9 @@
 
 * **Flutter (Dart)** – cross-platform UI (Windows, macOS, Linux)
 * **media_kit** – efficient native video playback
-* **Drift + SQLite** – lightweight local data persistence
+* **Local JSON storage** – lightweight on-disk persistence for session history and settings
 * **Riverpod** – state management
-* **CSV** – export summaries for external analysis
+* **CSV / Excel** – export summaries for external analysis
 
 ---
 
@@ -30,7 +32,7 @@
 
 You **do not need to install Flutter** to use SociaLyze.
 
-1. Go to the [Releases](https://github.com/<your-username>/socialyze/releases) page.
+1. Go to the [Releases](https://github.com/jiminpak03/socialyze/releases) page.
 2. Download the appropriate build for your operating system (e.g., `.zip` for Windows).
 3. Unzip the file to a convenient folder.
 4. Double-click the executable to launch SociaLyze.
@@ -53,7 +55,7 @@ No installation or dependencies are required — just download, unzip, and run.
 ### Clone & install
 
 ```bash
-git clone https://github.com/<your-username>/socialyze.git
+git clone https://github.com/jiminpak03/socialyze.git
 cd socialyze
 flutter pub get
 ```

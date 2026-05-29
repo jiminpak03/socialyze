@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../analysis/session_analyzer.dart';
 import 'session_database.dart';
+import 'settings_store.dart';
 
 // ============================================================================
 // Protocol Extension: Readable Labels
@@ -62,6 +63,19 @@ Map<String, Map<Chamber, LogicalKeyboardKey>> _generateDefaultKeyBindings(
     map[mouseIds[mouseIndex]] = chambers;
   }
   return map;
+}
+
+/// Outcome of attempting to log a chamber entry.
+enum LogResult {
+  /// Event was recorded.
+  recorded,
+
+  /// Ignored because no session is currently recording.
+  notRecording,
+
+  /// Rejected: the mouse cannot move between the two outer chambers
+  /// without passing through the middle chamber first.
+  impossibleMove,
 }
 
 // ============================================================================
@@ -155,6 +169,26 @@ class SessionState {
 
 const _copySentinel = Object();
 
+/// Physical left-to-right ordering of the arena chambers.
+/// The middle chamber separates the two outer chambers, so a mouse can only
+/// move to an adjacent chamber.
+int _chamberPosition(Chamber chamber) {
+  switch (chamber) {
+    case Chamber.empty:
+      return 0;
+    case Chamber.middle:
+      return 1;
+    case Chamber.stranger:
+      return 2;
+  }
+}
+
+/// True when moving from [from] to [to] would skip the middle chamber, which
+/// is physically impossible in a three-chamber arena.
+bool _isImpossibleTransition(Chamber from, Chamber to) {
+  return (_chamberPosition(from) - _chamberPosition(to)).abs() > 1;
+}
+
 // ============================================================================
 // Session Controller: State Management & Recording Logic
 // ============================================================================
@@ -237,9 +271,13 @@ class SessionController extends StateNotifier<SessionState> {
     );
   }
 
-  void logEvent(String mouseId, Chamber chamber) {
+  LogResult logEvent(String mouseId, Chamber chamber) {
     if (!state.isRecording) {
-      return;
+      return LogResult.notRecording;
+    }
+    final lastChamber = _lastChamberFor(mouseId);
+    if (lastChamber != null && _isImpossibleTransition(lastChamber, chamber)) {
+      return LogResult.impossibleMove;
     }
     final event = SessionEvent(
       mouseId: mouseId,
@@ -250,18 +288,22 @@ class SessionController extends StateNotifier<SessionState> {
       events: <SessionEvent>[...state.events, event],
       clearSummary: true,
     );
+    return LogResult.recorded;
+  }
+
+  /// Most recently logged chamber for [mouseId] in the current session,
+  /// or null if the mouse has no events yet.
+  Chamber? _lastChamberFor(String mouseId) {
+    for (var i = state.events.length - 1; i >= 0; i--) {
+      if (state.events[i].mouseId == mouseId) {
+        return state.events[i].chamber;
+      }
+    }
+    return null;
   }
 
   void attachVideo(String? path) {
     state = state.copyWith(videoPath: path);
-  }
-
-  String? exportCsv() {
-    final summary = state.summary;
-    if (summary == null) {
-      return null;
-    }
-    return generateSessionCsv(summary);
   }
 
   /// Export session summary as a file to disk.
@@ -333,6 +375,7 @@ class SessionController extends StateNotifier<SessionState> {
     Map<String, Map<Chamber, LogicalKeyboardKey>> keyMap,
   ) {
     state = state.copyWith(keyMap: keyMap);
+    SettingsStore.setKeyMap(keyMap);
   }
 }
 

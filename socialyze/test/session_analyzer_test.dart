@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:socialyze/analysis/session_analyzer.dart';
+import 'package:socialyze/src/session_controller.dart';
 
 void main() {
   group('analyzeSession', () {
@@ -80,6 +81,59 @@ void main() {
           sessionEnd: start.add(const Duration(seconds: 5)),
         ),
         throwsArgumentError,
+      );
+    });
+  });
+
+  group('SessionController.logEvent chamber-movement validation', () {
+    test('rejects moving between outer chambers without the middle', () {
+      final controller = SessionController()..startSession();
+
+      expect(controller.logEvent('Mouse A', Chamber.empty), LogResult.recorded);
+      expect(
+        controller.logEvent('Mouse A', Chamber.stranger),
+        LogResult.impossibleMove,
+      );
+      // The impossible event must not be recorded.
+      expect(controller.state.events.length, 1);
+    });
+
+    test('allows adjacent moves through the middle chamber', () {
+      final controller = SessionController()..startSession();
+
+      expect(controller.logEvent('Mouse A', Chamber.empty), LogResult.recorded);
+      expect(
+        controller.logEvent('Mouse A', Chamber.middle),
+        LogResult.recorded,
+      );
+      expect(
+        controller.logEvent('Mouse A', Chamber.stranger),
+        LogResult.recorded,
+      );
+      expect(controller.state.events.length, 3);
+    });
+
+    test('validates each mouse independently', () {
+      final controller = SessionController()..startSession();
+
+      controller.logEvent('Mouse A', Chamber.empty);
+      // A different mouse starting in stranger is fine.
+      expect(
+        controller.logEvent('Mouse B', Chamber.stranger),
+        LogResult.recorded,
+      );
+      // But Mouse A still cannot jump empty -> stranger.
+      expect(
+        controller.logEvent('Mouse A', Chamber.stranger),
+        LogResult.impossibleMove,
+      );
+    });
+
+    test('ignores events when not recording', () {
+      final controller = SessionController();
+      expect(
+        controller.logEvent('Mouse A', Chamber.empty),
+        LogResult.notRecording,
       );
     });
   });

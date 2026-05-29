@@ -11,6 +11,7 @@ import 'analysis/session_analyzer.dart';
 import 'src/session_controller.dart';
 import 'src/chamber_visualization.dart';
 import 'src/session_database.dart';
+import 'src/settings_store.dart';
 
 // ============================================================================
 // Extensions
@@ -47,8 +48,24 @@ Future<void> main() async {
     await windowManager.show();
     await windowManager.focus();
   });
-  
-  runApp(const ProviderScope(child: SociaLyzeApp()));
+
+  // Restore persisted preferences before building the app.
+  final settings = await SettingsStore.load();
+  _mouseIds = List<String>.from(settings.mouseIds);
+  final initialKeyMap =
+      settings.keyMap.isEmpty ? _defaultKeyMap() : settings.keyMap;
+
+  runApp(
+    ProviderScope(
+      overrides: [
+        darkModeProvider.overrideWith((ref) => settings.darkMode),
+        sessionControllerProvider.overrideWith(
+          (ref) => SessionController(initialKeyMap: initialKeyMap),
+        ),
+      ],
+      child: const SociaLyzeApp(),
+    ),
+  );
 }
 
 class SociaLyzeApp extends ConsumerWidget {
@@ -190,7 +207,23 @@ class _SessionHomeState extends ConsumerState<SessionHome> {
         if (binding == null) {
           return;
         }
-        controller.logEvent(binding.mouseId, binding.chamber);
+        final result = controller.logEvent(binding.mouseId, binding.chamber);
+        if (result == LogResult.impossibleMove) {
+          final messenger = ScaffoldMessenger.of(context);
+          messenger.hideCurrentSnackBar();
+          messenger.showSnackBar(
+            SnackBar(
+              content: Text(
+                '${binding.mouseId} must pass through '
+                '${_chamberLabel(session.protocol, Chamber.middle)} first — '
+                'skipped impossible move to '
+                '${_chamberLabel(session.protocol, binding.chamber)}.',
+              ),
+              behavior: SnackBarBehavior.floating,
+              duration: const Duration(seconds: 2),
+            ),
+          );
+        }
       },
       child: Scaffold(
         appBar: AppBar(
@@ -342,19 +375,40 @@ class _SessionToolbar extends ConsumerWidget {
                 },
         ),
         ElevatedButton.icon(
-          icon: const Icon(Icons.table_view),
-          label: const Text('Export Summary'),
+          icon: const Icon(Icons.description_outlined),
+          label: const Text('Export CSV'),
           onPressed: session.summary == null
               ? null
               : () async {
                   final success = await controller.exportSummaryToFile();
                   if (!context.mounted) return;
-                  
+
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text(
                         success
-                            ? 'Summary exported successfully'
+                            ? 'CSV exported successfully'
+                            : 'Export cancelled or failed',
+                      ),
+                      duration: const Duration(seconds: 2),
+                    ),
+                  );
+                },
+        ),
+        ElevatedButton.icon(
+          icon: const Icon(Icons.table_view),
+          label: const Text('Export Excel'),
+          onPressed: session.summary == null
+              ? null
+              : () async {
+                  final success = await controller.exportSummaryAsExcel();
+                  if (!context.mounted) return;
+
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        success
+                            ? 'Excel file exported successfully'
                             : 'Export cancelled or failed',
                       ),
                       duration: const Duration(seconds: 2),
@@ -387,6 +441,7 @@ class _SessionToolbar extends ConsumerWidget {
           tooltip: isDarkMode ? 'Light Mode' : 'Dark Mode',
           onPressed: () {
             ref.read(darkModeProvider.notifier).state = !isDarkMode;
+            SettingsStore.setDarkMode(!isDarkMode);
           },
         ),
       ],
@@ -460,21 +515,24 @@ class _VideoPanelState extends State<_VideoPanel> {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  if (videoPath != null)
-                    Container(
-                      key: ValueKey(videoPath),
-                      color: Colors.black,
-                      child: SizedBox.expand(
-                        child: Video(
-                          controller: _videoController,
-                          fit: BoxFit.contain,
-                        ),
+                  // The video surface stays mounted at all times so its
+                  // texture is created up front; this avoids the previous
+                  // "drag twice" issue where the first video failed to render.
+                  Container(
+                    color: Colors.black,
+                    child: SizedBox.expand(
+                      child: Video(
+                        controller: _videoController,
+                        fit: BoxFit.contain,
                       ),
-                    )
-                  else
+                    ),
+                  ),
+
+                  // Drop hint overlay, shown only until a video is loaded.
+                  if (videoPath == null)
                     Container(
                       color: _dragging
-                          ? Colors.indigo.withValues(alpha: 0.08)
+                          ? Colors.indigo.withValues(alpha: 0.12)
                           : Colors.black,
                       child: LayoutBuilder(
                         builder: (context, constraints) {
@@ -498,15 +556,6 @@ class _VideoPanelState extends State<_VideoPanel> {
                                           .textTheme
                                           .titleMedium
                                           ?.copyWith(color: Colors.white),
-                                    ),
-                                    const SizedBox(height: 8),
-                                    Text(
-                                      'May need to drag video twice for visual playback',
-                                      textAlign: TextAlign.center,
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .bodySmall
-                                          ?.copyWith(color: Colors.white70),
                                     ),
                                     const SizedBox(height: 12),
                                     DecoratedBox(
@@ -1018,8 +1067,6 @@ class _RemapKeysDialogState extends State<_RemapKeysDialog> {
   String? _error;
   final FocusNode _focusNode = FocusNode();
 
-  late final Player _player = Player();
-
   bool get _isListening => _listeningMouseId != null && _listeningChamber != null;
 
   @override
@@ -1031,7 +1078,6 @@ class _RemapKeysDialogState extends State<_RemapKeysDialog> {
   @override
   void dispose() {
     _focusNode.dispose();
-    _player.dispose();
     super.dispose();
   }
 
@@ -1527,7 +1573,10 @@ class _RenameMouseDialogState extends State<_RenameMouseDialog> {
         ),
         FilledButton(
           onPressed: () {
-            // Update the mutable _mouseIds list with controller values
+            // Capture the current ids before renaming so bindings can be
+            // re-keyed correctly even after a previous rename.
+            final oldIds = List<String>.from(_mouseIds);
+
             for (var i = 0; i < _mouseIds.length; i++) {
               final newName = _controllers[i]?.text.trim();
               if (newName != null && newName.isNotEmpty) {
@@ -1535,18 +1584,17 @@ class _RenameMouseDialogState extends State<_RenameMouseDialog> {
               }
             }
 
-            // Update key mappings with new names
+            // Re-key the existing bindings from each old id to its new id.
             final updatedKeyMap = <String, Map<Chamber, LogicalKeyboardKey>>{};
             for (var i = 0; i < _mouseIds.length; i++) {
-              final oldId = ['Mouse A', 'Mouse B', 'Mouse C'][i];
-              final newId = _mouseIds[i];
-              final bindings = widget.session.keyMap[oldId];
+              final bindings = widget.session.keyMap[oldIds[i]];
               if (bindings != null) {
-                updatedKeyMap[newId] = Map.from(bindings);
+                updatedKeyMap[_mouseIds[i]] = Map.from(bindings);
               }
             }
 
             widget.controller.setKeyBindings(updatedKeyMap);
+            SettingsStore.setMouseIds(_mouseIds);
             Navigator.of(context).pop();
           },
           child: const Text('Apply'),
