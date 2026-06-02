@@ -89,6 +89,11 @@ Map<Chamber, LogicalKeyboardKey> defaultBindingsForIndex(int mouseIndex) {
   return chambers;
 }
 
+/// Maximum amount of time a single mouse is scored for, measured from that
+/// mouse's release (its first logged event). Dwell beyond this is dropped and
+/// the session auto-stops once every released mouse has reached it.
+const Duration kMaxMouseDwell = Duration(minutes: 10);
+
 /// Outcome of attempting to log a chamber entry.
 enum LogResult {
   /// Event was recorded.
@@ -100,6 +105,10 @@ enum LogResult {
   /// Rejected: the mouse cannot move between the two outer chambers
   /// without passing through the middle chamber first.
   impossibleMove,
+
+  /// Rejected: the mouse is already logged in this chamber, so re-logging it
+  /// is almost certainly a mistake (a duplicate entry).
+  sameChamber,
 }
 
 // ============================================================================
@@ -265,6 +274,18 @@ class SessionController extends StateNotifier<SessionState> {
   Duration get _currentVideoPosition =>
       _videoPositionProvider?.call() ?? Duration.zero;
 
+  /// Pauses the loaded video. Registered by the video panel so a logging error
+  /// (impossible move / duplicate) can halt playback for the user to correct.
+  void Function()? _pauseVideo;
+
+  void setPauseVideoCallback(void Function()? callback) {
+    _pauseVideo = callback;
+  }
+
+  /// Whether a session is currently recording. Public so widgets can react to
+  /// the live state from async callbacks without touching the protected [state].
+  bool get isRecording => state.isRecording;
+
   void setProtocol(Protocol protocol) {
     state = state.copyWith(protocol: protocol);
   }
@@ -305,8 +326,33 @@ class SessionController extends StateNotifier<SessionState> {
           .fold<Duration>(_currentVideoPosition,
               (max, p) => p > max ? p : max);
 
+      // Each mouse is scored for at most [kMaxMouseDwell] from its release
+      // (first event). Compute that per-mouse cap, drop any events logged past
+      // it, and tell the analyzer to end each mouse at min(cap, sessionEnd) so
+      // a mouse released early doesn't accrue more than its 10-minute window
+      // while later-released mice are still being scored.
+      final capPosition = <String, Duration>{};
+      for (final event in state.events) {
+        final existing = capPosition[event.mouseId];
+        if (existing == null || event.position < existing) {
+          capPosition[event.mouseId] = event.position;
+        }
+      }
+      capPosition.updateAll((_, releasePos) => releasePos + kMaxMouseDwell);
+
+      final cappedEvents = state.events
+          .where((e) => e.position <= capPosition[e.mouseId]!)
+          .toList();
+
+      final mouseSessionEnds = <String, DateTime>{
+        for (final entry in capPosition.entries)
+          entry.key: _positionToTimestamp(
+            entry.value < endPosition ? entry.value : endPosition,
+          ),
+      };
+
       summary = analyzeSession(
-        state.events
+        cappedEvents
             .map(
               (event) => ChamberEvent(
                 mouseId: event.mouseId,
@@ -316,6 +362,7 @@ class SessionController extends StateNotifier<SessionState> {
             )
             .toList(),
         sessionEnd: _positionToTimestamp(endPosition),
+        mouseSessionEnds: mouseSessionEnds,
       );
     }
 
@@ -349,7 +396,12 @@ class SessionController extends StateNotifier<SessionState> {
       return LogResult.notRecording;
     }
     final lastChamber = _lastChamberFor(mouseId);
+    if (lastChamber != null && lastChamber == chamber) {
+      _pauseVideo?.call();
+      return LogResult.sameChamber;
+    }
     if (lastChamber != null && _isImpossibleTransition(lastChamber, chamber)) {
+      _pauseVideo?.call();
       return LogResult.impossibleMove;
     }
     final event = SessionEvent(
@@ -374,6 +426,36 @@ class SessionController extends StateNotifier<SessionState> {
       }
     }
     return null;
+  }
+
+  /// Video position of [mouseId]'s release (its earliest logged event), or
+  /// null if the mouse has not been released yet.
+  Duration? _releasePositionFor(String mouseId) {
+    Duration? earliest;
+    for (final event in state.events) {
+      if (event.mouseId == mouseId &&
+          (earliest == null || event.position < earliest)) {
+        earliest = event.position;
+      }
+    }
+    return earliest;
+  }
+
+  /// True when every mouse in the roster has been released and each has reached
+  /// its [kMaxMouseDwell] scoring window by [position]. Used to auto-stop the
+  /// session once all mice have completed their 10 minutes.
+  bool shouldAutoStop(Duration position) {
+    if (!state.isRecording) return false;
+    final roster = state.keyMap.keys;
+    if (roster.isEmpty) return false;
+    for (final mouseId in roster) {
+      final release = _releasePositionFor(mouseId);
+      // A mouse that hasn't been released yet hasn't started its clock, so the
+      // session must keep running for the remaining (later-released) mice.
+      if (release == null) return false;
+      if (position - release < kMaxMouseDwell) return false;
+    }
+    return true;
   }
 
   void attachVideo(String? path) {

@@ -182,17 +182,35 @@ class _SessionHomeState extends ConsumerState<SessionHome> {
           return;
         }
         final result = controller.logEvent(binding.mouseId, binding.chamber);
-        if (result == LogResult.impossibleMove) {
+        if (result == LogResult.impossibleMove ||
+            result == LogResult.sameChamber) {
+          final chamberLabel = _chamberLabel(
+              session.protocol, binding.chamber,
+              swap: session.swapOuterChambers);
+          final message = result == LogResult.impossibleMove
+              ? '${binding.mouseId} must pass through '
+                  '${_chamberLabel(session.protocol, Chamber.middle, swap: session.swapOuterChambers)} first — '
+                  'skipped impossible move to $chamberLabel.'
+              : '${binding.mouseId} is already in $chamberLabel — '
+                  'ignored duplicate entry.';
+          final scheme = Theme.of(context).colorScheme;
           final messenger = ScaffoldMessenger.of(context);
           messenger.hideCurrentSnackBar();
           messenger.showSnackBar(
             SnackBar(
-              content: Text(
-                '${binding.mouseId} must pass through '
-                '${_chamberLabel(session.protocol, Chamber.middle, swap: session.swapOuterChambers)} first — '
-                'skipped impossible move to '
-                '${_chamberLabel(session.protocol, binding.chamber, swap: session.swapOuterChambers)}.',
+              content: Row(
+                children: [
+                  Icon(Icons.error_outline, color: scheme.onError, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      message,
+                      style: TextStyle(color: scheme.onError),
+                    ),
+                  ),
+                ],
               ),
+              backgroundColor: scheme.error,
               behavior: SnackBarBehavior.floating,
               duration: const Duration(seconds: 2),
             ),
@@ -419,23 +437,26 @@ class _SessionToolbar extends ConsumerWidget {
 // Video Panel: Media Playback & File Selection
 // ============================================================================
 
-class _VideoPanel extends StatefulWidget {
+class _VideoPanel extends ConsumerStatefulWidget {
   const _VideoPanel({required this.session, required this.controller});
   final SessionState session;
   final SessionController controller;
 
   @override
-  State<_VideoPanel> createState() => _VideoPanelState();
+  ConsumerState<_VideoPanel> createState() => _VideoPanelState();
 }
 
-class _VideoPanelState extends State<_VideoPanel> {
+class _VideoPanelState extends ConsumerState<_VideoPanel> {
   bool _dragging = false;
   bool _opening = false;
   double _rate = 1.0;
+  bool _autoStopping = false;
 
   // Player + controller
   late final Player _player = Player();
   late final VideoController _videoController = VideoController(_player);
+  StreamSubscription<Duration>? _positionSub;
+  StreamSubscription<bool>? _completedSub;
 
   @override
   void initState() {
@@ -443,11 +464,61 @@ class _VideoPanelState extends State<_VideoPanel> {
     // Let the session controller read the video's playback position so events
     // are timestamped in video time (independent of playback speed).
     widget.controller.setVideoPositionProvider(() => _player.state.position);
+    // Pause playback when the user logs an invalid event so they can correct it.
+    widget.controller.setPauseVideoCallback(() => _player.pause());
+    // Watch playback position so the session can auto-stop once every mouse has
+    // reached its 10-minute scoring window (positions advance even between key
+    // presses, so this can't be driven by event logging alone).
+    _positionSub = _player.stream.position.listen(_handlePositionTick);
+    // When the video ends, the session simply ends with whatever was logged —
+    // a short video that never reaches 10 minutes just stops here.
+    _completedSub = _player.stream.completed.listen(_handleCompleted);
+  }
+
+  /// Stops the session quietly when the video reaches its end.
+  Future<void> _handleCompleted(bool completed) async {
+    if (!completed) return;
+    if (!widget.controller.isRecording) return;
+    _autoStopping = true;
+    await widget.controller.stopSession();
+    if (!mounted) return;
+    ref.invalidate(sessionHistoryProvider);
+  }
+
+  @override
+  void didUpdateWidget(covariant _VideoPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Re-arm auto-stop whenever a fresh recording begins.
+    if (widget.session.isRecording && !oldWidget.session.isRecording) {
+      _autoStopping = false;
+    }
+  }
+
+  /// Auto-stops the session when all mice have completed their scoring window.
+  Future<void> _handlePositionTick(Duration position) async {
+    if (_autoStopping) return;
+    if (!widget.controller.shouldAutoStop(position)) return;
+    _autoStopping = true;
+    await widget.controller.stopSession();
+    if (!mounted) return;
+    ref.invalidate(sessionHistoryProvider);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Session stopped automatically — every mouse reached 10 minutes.',
+        ),
+        behavior: SnackBarBehavior.floating,
+        duration: Duration(seconds: 3),
+      ),
+    );
   }
 
   @override
   void dispose() {
+    _positionSub?.cancel();
+    _completedSub?.cancel();
     widget.controller.setVideoPositionProvider(null);
+    widget.controller.setPauseVideoCallback(null);
     _player.dispose();
     super.dispose();
   }

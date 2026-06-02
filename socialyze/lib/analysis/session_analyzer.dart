@@ -68,9 +68,15 @@ class SessionSummary {
 }
 
 /// Computes dwell times, switch counts and supporting metadata for a session.
+///
+/// [mouseSessionEnds] optionally supplies a per-mouse end instant that overrides
+/// the global [sessionEnd] when accruing that mouse's final dwell segment. This
+/// is used to cap each mouse at a fixed scoring window (e.g. 10 minutes from its
+/// release) even when other mice were released later and the session ran longer.
 SessionSummary analyzeSession(
   List<ChamberEvent> events, {
   required DateTime sessionEnd,
+  Map<String, DateTime>? mouseSessionEnds,
 }) {
   if (events.isEmpty) {
     throw ArgumentError('At least one event is required to analyze a session.');
@@ -95,11 +101,15 @@ SessionSummary analyzeSession(
   grouped.forEach((mouseId, mouseEvents) {
     mouseEvents.sort((a, b) => a.timestamp.compareTo(b.timestamp));
 
+    // A mouse can be scored for a shorter window than the overall session
+    // (e.g. capped at 10 minutes from its own release).
+    final effectiveEnd = mouseSessionEnds?[mouseId] ?? sessionEnd;
+
     if (mouseEvents.first.timestamp.isAfter(mouseEvents.last.timestamp)) {
       throw ArgumentError('Invalid timestamps for mouse $mouseId.');
     }
 
-    if (sessionEnd.isBefore(mouseEvents.last.timestamp)) {
+    if (effectiveEnd.isBefore(mouseEvents.last.timestamp)) {
       throw ArgumentError(
         'Session end must be after the last event for mouse $mouseId.',
       );
@@ -125,7 +135,7 @@ SessionSummary analyzeSession(
       previousEvent = event;
     }
 
-    final tailDuration = sessionEnd.difference(previousEvent.timestamp);
+    final tailDuration = effectiveEnd.difference(previousEvent.timestamp);
     if (tailDuration.isNegative) {
       throw ArgumentError('Session end must be after the last event.');
     }
@@ -153,10 +163,11 @@ SessionSummary analyzeSession(
 ///
 /// All durations are measured in *video time* (derived from the video's
 /// playback position), so they are unaffected by the playback speed used while
-/// scoring. When [swapOuterChambers] is true the Empty and Stranger columns are
-/// relabelled to match a video whose chamber orientation is flipped; the
-/// underlying values follow their labels so the export matches what was shown
-/// on screen.
+/// scoring. When [swapOuterChambers] is true the video's outer chambers are
+/// flipped, so the keys the user pressed for the "Stranger" chamber actually
+/// recorded [Chamber.empty] events (and vice versa). The export therefore maps
+/// each labelled column to the internal chamber that was recorded under that
+/// label, so the CSV matches exactly what was shown on screen.
 String generateSessionCsv(
   SessionSummary summary, {
   bool swapOuterChambers = false,
@@ -171,30 +182,32 @@ String generateSessionCsv(
   buffer.writeln('Total Duration,${_formatDuration(summary.duration)}');
   buffer.writeln('');
 
-  final firstLabel = swapOuterChambers ? 'Stranger (s)' : 'Empty (s)';
-  final lastLabel = swapOuterChambers ? 'Empty (s)' : 'Stranger (s)';
-
-  // Summary statistics per mouse - in spreadsheet-friendly format
+  // Column order is fixed; only the chamber that feeds each outer column moves.
   buffer.writeln(
-    'Mouse ID,$firstLabel,Middle (s),$lastLabel,Total Dwell (s),Switch Count',
+    'Mouse ID,Empty (s),Middle (s),Stranger (s),Total Dwell (s),Switch Count',
   );
+
+  // The internal chamber recorded under each on-screen label. With the swap on,
+  // the "Empty" label was logged as Chamber.stranger and "Stranger" as
+  // Chamber.empty.
+  final emptyColumnChamber = swapOuterChambers ? Chamber.stranger : Chamber.empty;
+  final strangerColumnChamber =
+      swapOuterChambers ? Chamber.empty : Chamber.stranger;
 
   for (final entry in summary.mouseSummaries.entries) {
     final mouseId = entry.key;
     final mouseSummary = entry.value;
 
-    // The first/last columns track the chamber currently shown under that
-    // label, so a swap relabels the column without moving the recorded value.
-    final firstChamber = swapOuterChambers ? Chamber.stranger : Chamber.empty;
-    final lastChamber = swapOuterChambers ? Chamber.empty : Chamber.stranger;
-
-    final firstDwell = mouseSummary.dwellTime(firstChamber).inMilliseconds / 1000;
-    final middleDwell = mouseSummary.dwellTime(Chamber.middle).inMilliseconds / 1000;
-    final lastDwell = mouseSummary.dwellTime(lastChamber).inMilliseconds / 1000;
+    final emptyDwell =
+        mouseSummary.dwellTime(emptyColumnChamber).inMilliseconds / 1000;
+    final middleDwell =
+        mouseSummary.dwellTime(Chamber.middle).inMilliseconds / 1000;
+    final strangerDwell =
+        mouseSummary.dwellTime(strangerColumnChamber).inMilliseconds / 1000;
     final totalDwell = mouseSummary.totalDwell.inMilliseconds / 1000;
 
     buffer.writeln(
-      '$mouseId,${firstDwell.toStringAsFixed(3)},${middleDwell.toStringAsFixed(3)},${lastDwell.toStringAsFixed(3)},${totalDwell.toStringAsFixed(3)},${mouseSummary.switchCount}',
+      '$mouseId,${emptyDwell.toStringAsFixed(3)},${middleDwell.toStringAsFixed(3)},${strangerDwell.toStringAsFixed(3)},${totalDwell.toStringAsFixed(3)},${mouseSummary.switchCount}',
     );
   }
 
