@@ -12,11 +12,13 @@ class ChamberVisualization extends StatelessWidget {
   const ChamberVisualization({
     required this.summary,
     required this.protocol,
+    this.swapOuterChambers = false,
     super.key,
   });
 
   final MouseSummary summary;
   final Protocol protocol;
+  final bool swapOuterChambers;
 
   @override
   Widget build(BuildContext context) {
@@ -69,17 +71,20 @@ class ChamberVisualization extends StatelessWidget {
             children: [
               _LegendItem(
                 color: emptyColor,
-                label: _chamberLabel(protocol, Chamber.empty),
+                label: _chamberLabel(protocol, Chamber.empty,
+                    swap: swapOuterChambers),
                 percentage: (empty * 100).toStringAsFixed(1),
               ),
               _LegendItem(
                 color: middleColor,
-                label: _chamberLabel(protocol, Chamber.middle),
+                label: _chamberLabel(protocol, Chamber.middle,
+                    swap: swapOuterChambers),
                 percentage: (middle * 100).toStringAsFixed(1),
               ),
               _LegendItem(
                 color: strangerColor,
-                label: _chamberLabel(protocol, Chamber.stranger),
+                label: _chamberLabel(protocol, Chamber.stranger,
+                    swap: swapOuterChambers),
                 percentage: (stranger * 100).toStringAsFixed(1),
               ),
             ],
@@ -228,10 +233,17 @@ class _LegendItem extends StatelessWidget {
   }
 }
 
-String _chamberLabel(Protocol protocol, Chamber chamber) {
+String _chamberLabel(Protocol protocol, Chamber chamber, {bool swap = false}) {
+  final effective = swap
+      ? (chamber == Chamber.empty
+          ? Chamber.stranger
+          : chamber == Chamber.stranger
+              ? Chamber.empty
+              : chamber)
+      : chamber;
   switch (protocol) {
     case Protocol.socialInteraction:
-      switch (chamber) {
+      switch (effective) {
         case Chamber.empty:
           return 'Empty';
         case Chamber.middle:
@@ -240,7 +252,7 @@ String _chamberLabel(Protocol protocol, Chamber chamber) {
           return 'Stranger';
       }
     case Protocol.socialNovelty:
-      switch (chamber) {
+      switch (effective) {
         case Chamber.empty:
           return 'New Stranger';
         case Chamber.middle:

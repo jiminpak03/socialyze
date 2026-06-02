@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:desktop_drop/desktop_drop.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -60,7 +61,10 @@ Future<void> main() async {
       overrides: [
         darkModeProvider.overrideWith((ref) => settings.darkMode),
         sessionControllerProvider.overrideWith(
-          (ref) => SessionController(initialKeyMap: initialKeyMap),
+          (ref) => SessionController(
+            initialKeyMap: initialKeyMap,
+            initialSwapOuterChambers: settings.swapOuterChambers,
+          ),
         ),
       ],
       child: const SociaLyzeApp(),
@@ -108,41 +112,11 @@ const List<Chamber> _chamberOrder = [
 // Keyboard Shortcut Configuration
 // ============================================================================
 
-/// Builds default key bindings for each mouse and chamber.
-/// Maps numpad keys to mice/chambers:
-/// - Mouse A: 7/4/1 (empty/middle/stranger)
-/// - Mouse B: 8/5/2 (empty/middle/stranger)
-/// - Mouse C: 9/6/3 (empty/middle/stranger)
+/// Builds default key bindings for the current roster of mice.
+/// The first three mice use numpad columns (7/4/1, 8/5/2, 9/6/3); additional
+/// mice fall back to letter columns. See [generateDefaultKeyBindings].
 Map<String, Map<Chamber, LogicalKeyboardKey>> _defaultKeyMap() {
-  const keyGrid = <List<LogicalKeyboardKey>>[
-    [
-      LogicalKeyboardKey.numpad7,
-      LogicalKeyboardKey.numpad4,
-      LogicalKeyboardKey.numpad1,
-    ],
-    [
-      LogicalKeyboardKey.numpad8,
-      LogicalKeyboardKey.numpad5,
-      LogicalKeyboardKey.numpad2,
-    ],
-    [
-      LogicalKeyboardKey.numpad9,
-      LogicalKeyboardKey.numpad6,
-      LogicalKeyboardKey.numpad3,
-    ],
-  ];
-
-  final map = <String, Map<Chamber, LogicalKeyboardKey>>{};
-  for (var mouseIndex = 0; mouseIndex < _mouseIds.length; mouseIndex++) {
-    final chambers = <Chamber, LogicalKeyboardKey>{};
-    for (var chamberIndex = 0;
-        chamberIndex < _chamberOrder.length;
-        chamberIndex++) {
-      chambers[_chamberOrder[chamberIndex]] = keyGrid[mouseIndex][chamberIndex];
-    }
-    map[_mouseIds[mouseIndex]] = chambers;
-  }
-  return map;
+  return generateDefaultKeyBindings(_mouseIds);
 }
 
 /// Deep clones key mappings for modification.
@@ -215,9 +189,9 @@ class _SessionHomeState extends ConsumerState<SessionHome> {
             SnackBar(
               content: Text(
                 '${binding.mouseId} must pass through '
-                '${_chamberLabel(session.protocol, Chamber.middle)} first — '
+                '${_chamberLabel(session.protocol, Chamber.middle, swap: session.swapOuterChambers)} first — '
                 'skipped impossible move to '
-                '${_chamberLabel(session.protocol, binding.chamber)}.',
+                '${_chamberLabel(session.protocol, binding.chamber, swap: session.swapOuterChambers)}.',
               ),
               behavior: SnackBarBehavior.floating,
               duration: const Duration(seconds: 2),
@@ -291,7 +265,10 @@ class _SessionHomeState extends ConsumerState<SessionHome> {
               SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
                 child: _KeyboardLegend(
-                    protocol: session.protocol, bindings: bindings),
+                  protocol: session.protocol,
+                  bindings: bindings,
+                  swap: session.swapOuterChambers,
+                ),
               ),
             ],
           ),
@@ -395,30 +372,19 @@ class _SessionToolbar extends ConsumerWidget {
                   );
                 },
         ),
-        ElevatedButton.icon(
-          icon: const Icon(Icons.table_view),
-          label: const Text('Export Excel'),
-          onPressed: session.summary == null
-              ? null
-              : () async {
-                  final success = await controller.exportSummaryAsExcel();
-                  if (!context.mounted) return;
-
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(
-                        success
-                            ? 'Excel file exported successfully'
-                            : 'Export cancelled or failed',
-                      ),
-                      duration: const Duration(seconds: 2),
-                    ),
-                  );
-                },
+        Tooltip(
+          message: 'Swap which outer chamber is labeled Empty vs Stranger to '
+              'match this video’s orientation.',
+          child: FilterChip(
+            avatar: const Icon(Icons.swap_vert, size: 18),
+            label: const Text('Flip Empty/Stranger'),
+            selected: session.swapOuterChambers,
+            onSelected: (value) => controller.setSwapOuterChambers(value),
+          ),
         ),
           OutlinedButton.icon(
             icon: const Icon(Icons.edit),
-            label: const Text('Rename mice'),
+            label: const Text('Manage mice'),
             onPressed: session.isRecording
                 ? null
                 : () {
@@ -472,9 +438,31 @@ class _VideoPanelState extends State<_VideoPanel> {
   late final VideoController _videoController = VideoController(_player);
 
   @override
+  void initState() {
+    super.initState();
+    // Let the session controller read the video's playback position so events
+    // are timestamped in video time (independent of playback speed).
+    widget.controller.setVideoPositionProvider(() => _player.state.position);
+  }
+
+  @override
   void dispose() {
+    widget.controller.setVideoPositionProvider(null);
     _player.dispose();
     super.dispose();
+  }
+
+  /// Opens a video chosen via the system file picker (a reliable alternative
+  /// to drag-and-drop).
+  Future<void> _openFromPicker() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.video,
+      dialogTitle: 'Select a video to score',
+    );
+    final path = result?.files.firstOrNull?.path;
+    if (path != null) {
+      await _open(path);
+    }
   }
 
   Future<void> _open(String path) async {
@@ -483,7 +471,7 @@ class _VideoPanelState extends State<_VideoPanel> {
       await _player.open(Media(path));
       await _player.setRate(_rate); // ensure current speed applies
       widget.controller.attachVideo(path);
-      
+
       // Small delay to ensure texture is properly sized before showing
       await Future.delayed(const Duration(milliseconds: 100));
       if (mounted) {
@@ -557,6 +545,30 @@ class _VideoPanelState extends State<_VideoPanel> {
                                           .textTheme
                                           .titleMedium
                                           ?.copyWith(color: Colors.white),
+                                    ),
+                                    const SizedBox(height: 12),
+                                    OutlinedButton.icon(
+                                      onPressed:
+                                          _opening ? null : _openFromPicker,
+                                      icon: const Icon(Icons.folder_open,
+                                          color: Colors.white),
+                                      label: const Text('Open video…',
+                                          style:
+                                              TextStyle(color: Colors.white)),
+                                      style: OutlinedButton.styleFrom(
+                                        side: const BorderSide(
+                                            color: Colors.white54),
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      'Tip: if a dropped video doesn’t appear, '
+                                      'drop it again or use “Open video…”.',
+                                      textAlign: TextAlign.center,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(color: Colors.white70),
                                     ),
                                     const SizedBox(height: 12),
                                     DecoratedBox(
@@ -643,6 +655,31 @@ class _VideoPanelState extends State<_VideoPanel> {
                       ),
                     ),
                   ),
+
+                // Per-mouse release: press the moment that mouse's doors open.
+                // Logs a Middle entry at the current video position, which
+                // starts that mouse's scoring (handles staggered door openings).
+                if (widget.session.isRecording)
+                  for (final mouseId in _mouseIds)
+                    Builder(
+                      builder: (context) {
+                        final released = widget.session.events
+                            .any((e) => e.mouseId == mouseId);
+                        return OutlinedButton.icon(
+                          onPressed: released
+                              ? null
+                              : () => widget.controller
+                                  .logEvent(mouseId, Chamber.middle),
+                          icon: Icon(
+                            released ? Icons.check : Icons.login,
+                            size: 16,
+                          ),
+                          label: Text(
+                            released ? '$mouseId in' : 'Release $mouseId',
+                          ),
+                        );
+                      },
+                    ),
               ],
             ),
           ),
@@ -694,12 +731,13 @@ class _EventLog extends StatelessWidget {
                             child: Text(event.mouseId.split(' ').last),
                           ),
                           title: Text(
-                            '${event.mouseId} → ${_chamberLabel(session.protocol, event.chamber)}',
+                            '${event.mouseId} → ${_chamberLabel(session.protocol, event.chamber, swap: session.swapOuterChambers)}',
                           ),
-                          subtitle: Text(_formatTime(event.timestamp)),
+                          subtitle: Text(_formatPosition(event.position)),
                           trailing: Chip(
-                            label: Text(
-                                _chamberLabel(session.protocol, event.chamber)),
+                            label: Text(_chamberLabel(
+                                session.protocol, event.chamber,
+                                swap: session.swapOuterChambers)),
                           ),
                         );
                       },
@@ -772,6 +810,8 @@ class _SummaryPanel extends StatelessWidget {
                                     child: ChamberVisualization(
                                       summary: entry.value,
                                       protocol: session.protocol,
+                                      swapOuterChambers:
+                                          session.swapOuterChambers,
                                     ),
                                   ),
                                 ),
@@ -781,6 +821,7 @@ class _SummaryPanel extends StatelessWidget {
                                 mouseId: entry.key,
                                 summary: entry.value,
                                 protocol: session.protocol,
+                                swap: session.swapOuterChambers,
                               ),
                             ],
                           ),
@@ -806,11 +847,13 @@ class _MouseSummaryCard extends StatelessWidget {
     required this.mouseId,
     required this.summary,
     required this.protocol,
+    this.swap = false,
   });
 
   final String mouseId;
   final MouseSummary summary;
   final Protocol protocol;
+  final bool swap;
 
   @override
   Widget build(BuildContext context) {
@@ -839,7 +882,7 @@ class _MouseSummaryCard extends StatelessWidget {
                 final dwell = summary.dwellTime(chamber);
                 return Chip(
                   label: Text(
-                    '${_chamberLabel(protocol, chamber)}: ${_formatDuration(dwell)}',
+                    '${_chamberLabel(protocol, chamber, swap: swap)}: ${_formatDuration(dwell)}',
                   ),
                 );
               }).toList(),
@@ -859,10 +902,15 @@ class _MouseSummaryCard extends StatelessWidget {
 // ============================================================================
 
 class _KeyboardLegend extends StatelessWidget {
-  const _KeyboardLegend({required this.protocol, required this.bindings});
+  const _KeyboardLegend({
+    required this.protocol,
+    required this.bindings,
+    this.swap = false,
+  });
 
   final Protocol protocol;
   final List<_KeyBinding> bindings;
+  final bool swap;
 
   @override
   Widget build(BuildContext context) {
@@ -901,7 +949,7 @@ class _KeyboardLegend extends StatelessWidget {
                       const SizedBox(height: 6),
                       ...entry.value.map(
                         (binding) => Text(
-                          '${binding.keyLabel} → ${_chamberLabel(protocol, binding.chamber)}',
+                          '${binding.keyLabel} → ${_chamberLabel(protocol, binding.chamber, swap: swap)}',
                         ),
                       ),
                     ],
@@ -1143,7 +1191,7 @@ class _RemapKeysDialogState extends State<_RemapKeysDialog> {
     if (conflict != null) {
       setState(() {
         _error =
-            'Already assigned to ${conflict.mouseId} → ${_chamberLabel(widget.session.protocol, conflict.chamber)}';
+            'Already assigned to ${conflict.mouseId} → ${_chamberLabel(widget.session.protocol, conflict.chamber, swap: widget.session.swapOuterChambers)}';
       });
       return;
     }
@@ -1220,6 +1268,7 @@ class _RemapKeysDialogState extends State<_RemapKeysDialog> {
                           onTap: _startListening,
                           onCancel: _stopListening,
                           isListening: _isListeningFor,
+                          swap: widget.session.swapOuterChambers,
                         ),
                     for (final entry in _workingMap.entries)
                       if (!_mouseIds.contains(entry.key))
@@ -1230,6 +1279,7 @@ class _RemapKeysDialogState extends State<_RemapKeysDialog> {
                           onTap: _startListening,
                           onCancel: _stopListening,
                           isListening: _isListeningFor,
+                          swap: widget.session.swapOuterChambers,
                         ),
                   ],
                 ),
@@ -1276,6 +1326,7 @@ class _KeyRemapSection extends StatelessWidget {
     required this.onTap,
     required this.onCancel,
     required this.isListening,
+    this.swap = false,
   });
 
   final String mouseId;
@@ -1284,6 +1335,7 @@ class _KeyRemapSection extends StatelessWidget {
   final void Function(String mouseId, Chamber chamber) onTap;
   final VoidCallback onCancel;
   final bool Function(String mouseId, Chamber chamber) isListening;
+  final bool swap;
 
   @override
   Widget build(BuildContext context) {
@@ -1308,7 +1360,7 @@ class _KeyRemapSection extends StatelessWidget {
             final listening = isListening(mouseId, chamber);
             return ListTile(
               contentPadding: EdgeInsets.zero,
-              title: Text(_chamberLabel(protocol, chamber)),
+              title: Text(_chamberLabel(protocol, chamber, swap: swap)),
               subtitle: Text('Shortcut: ${_describeKey(key)}'),
               trailing: OutlinedButton(
                 onPressed: listening ? onCancel : () => onTap(mouseId, chamber),
@@ -1441,10 +1493,19 @@ bool _isModifierKey(LogicalKeyboardKey key) {
       key == LogicalKeyboardKey.fn;
 }
 
-String _chamberLabel(Protocol protocol, Chamber chamber) {
+String _chamberLabel(Protocol protocol, Chamber chamber, {bool swap = false}) {
+  // A swap flips the displayed identity of the two outer chambers so the UI
+  // matches a video whose orientation is reversed. The middle is unaffected.
+  final effective = swap
+      ? (chamber == Chamber.empty
+          ? Chamber.stranger
+          : chamber == Chamber.stranger
+              ? Chamber.empty
+              : chamber)
+      : chamber;
   switch (protocol) {
     case Protocol.socialInteraction:
-      switch (chamber) {
+      switch (effective) {
         case Chamber.empty:
           return 'Empty';
         case Chamber.middle:
@@ -1453,7 +1514,7 @@ String _chamberLabel(Protocol protocol, Chamber chamber) {
           return 'Stranger';
       }
     case Protocol.socialNovelty:
-      switch (chamber) {
+      switch (effective) {
         case Chamber.empty:
           return 'New Stranger';
         case Chamber.middle:
@@ -1470,6 +1531,19 @@ String _formatTime(DateTime timestamp) {
   final minute = timeOfDay.minute.toString().padLeft(2, '0');
   final suffix = timeOfDay.period == DayPeriod.am ? 'AM' : 'PM';
   return '$hour:$minute $suffix';
+}
+
+/// Formats a video playback position as h:mm:ss (or m:ss when under an hour).
+String _formatPosition(Duration position) {
+  final hours = position.inHours;
+  final minutes = position.inMinutes.remainder(60);
+  final seconds = position.inSeconds.remainder(60);
+  final mm = minutes.toString().padLeft(2, '0');
+  final ss = seconds.toString().padLeft(2, '0');
+  if (hours > 0) {
+    return '$hours:$mm:$ss';
+  }
+  return '$minutes:$ss';
 }
 
 String _formatDuration(Duration duration) {
@@ -1507,63 +1581,103 @@ class _RenameMouseDialog extends StatefulWidget {
 }
 
 class _RenameMouseDialogState extends State<_RenameMouseDialog> {
-  late Map<int, String> _newNames;
-  late Map<int, TextEditingController> _controllers;
+  // Number of arenas a single video can hold. Studies use 2-6 mice.
+  static const int _minMice = 2;
+  static const int _maxMice = 6;
+
+  // One controller per editable row; the list length is the mouse count.
+  late List<TextEditingController> _controllers;
 
   @override
   void initState() {
     super.initState();
-    _newNames = {for (var i = 0; i < _mouseIds.length; i++) i: _mouseIds[i]};
-    // Create one TextEditingController per mouse field, initialized with current name
-    _controllers = {
-      for (var i = 0; i < _mouseIds.length; i++)
-        i: TextEditingController(text: _mouseIds[i])
-    };
+    _controllers = [
+      for (final id in _mouseIds) TextEditingController(text: id),
+    ];
   }
 
   @override
   void dispose() {
-    // Clean up controllers when dialog closes
-    for (final controller in _controllers.values) {
+    for (final controller in _controllers) {
       controller.dispose();
     }
     super.dispose();
   }
 
+  /// Default placeholder name for the row at [index] (Mouse A, Mouse B, ...).
+  String _defaultName(int index) => 'Mouse ${String.fromCharCode(65 + index)}';
+
+  void _addMouse() {
+    if (_controllers.length >= _maxMice) return;
+    setState(() {
+      _controllers.add(
+        TextEditingController(text: _defaultName(_controllers.length)),
+      );
+    });
+  }
+
+  void _removeMouse(int index) {
+    if (_controllers.length <= _minMice) return;
+    setState(() {
+      _controllers.removeAt(index).dispose();
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final count = _controllers.length;
     return AlertDialog(
-      title: const Text('Rename mice'),
+      title: const Text('Manage mice'),
       content: SizedBox(
         width: 400,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              'Enter new names for each mouse:',
+              'Name each mouse, or add/remove arenas to match the video '
+              '($_minMice-$_maxMice mice):',
               style: theme.textTheme.bodyMedium,
             ),
             const SizedBox(height: 16),
-            ..._mouseIds.asMap().entries.map((entry) {
-              final index = entry.key;
-              final currentName = entry.value;
-              final controller = _controllers[index]!;
+            ...List.generate(count, (index) {
+              final controller = _controllers[index];
               return Padding(
                 padding: const EdgeInsets.only(bottom: 12),
-                child: TextField(
-                  controller: controller,
-                  onChanged: (value) {
-                    setState(() => _newNames[index] = value);
-                  },
-                  decoration: InputDecoration(
-                    labelText: currentName,
-                    hintText: currentName,
-                    border: const OutlineInputBorder(),
-                  ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: controller,
+                        decoration: InputDecoration(
+                          labelText: 'Mouse ${index + 1}',
+                          hintText: _defaultName(index),
+                          border: const OutlineInputBorder(),
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: count <= _minMice
+                          ? 'At least $_minMice mice required'
+                          : 'Remove this mouse',
+                      icon: const Icon(Icons.remove_circle_outline),
+                      onPressed:
+                          count <= _minMice ? null : () => _removeMouse(index),
+                    ),
+                  ],
                 ),
               );
             }),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: count >= _maxMice ? null : _addMouse,
+                icon: const Icon(Icons.add),
+                label: Text(
+                  count >= _maxMice ? 'Maximum $_maxMice mice' : 'Add mouse',
+                ),
+              ),
+            ),
           ],
         ),
       ),
@@ -1574,28 +1688,33 @@ class _RenameMouseDialogState extends State<_RenameMouseDialog> {
         ),
         FilledButton(
           onPressed: () {
-            // Capture the current ids before renaming so bindings can be
-            // re-keyed correctly even after a previous rename.
+            // Capture the current ids before applying so existing bindings can
+            // be re-keyed correctly even after a rename.
             final oldIds = List<String>.from(_mouseIds);
 
-            for (var i = 0; i < _mouseIds.length; i++) {
-              final newName = _controllers[i]?.text.trim();
-              if (newName != null && newName.isNotEmpty) {
-                _mouseIds[i] = newName;
-              }
-            }
+            // Build the new roster from the fields, falling back to a default
+            // name for any blank row.
+            final newIds = <String>[
+              for (var i = 0; i < _controllers.length; i++)
+                _controllers[i].text.trim().isEmpty
+                    ? _defaultName(i)
+                    : _controllers[i].text.trim(),
+            ];
 
-            // Re-key the existing bindings from each old id to its new id.
+            // Re-key existing bindings by position; rows beyond the previous
+            // roster (newly added mice) get sensible default bindings.
             final updatedKeyMap = <String, Map<Chamber, LogicalKeyboardKey>>{};
-            for (var i = 0; i < _mouseIds.length; i++) {
-              final bindings = widget.session.keyMap[oldIds[i]];
-              if (bindings != null) {
-                updatedKeyMap[_mouseIds[i]] = Map.from(bindings);
-              }
+            for (var i = 0; i < newIds.length; i++) {
+              final existing =
+                  i < oldIds.length ? widget.session.keyMap[oldIds[i]] : null;
+              updatedKeyMap[newIds[i]] = existing != null
+                  ? Map<Chamber, LogicalKeyboardKey>.from(existing)
+                  : defaultBindingsForIndex(i);
             }
 
+            _mouseIds = newIds;
             widget.controller.setKeyBindings(updatedKeyMap);
-            SettingsStore.setMouseIds(_mouseIds);
+            SettingsStore.setMouseIds(newIds);
             Navigator.of(context).pop();
           },
           child: const Text('Apply'),

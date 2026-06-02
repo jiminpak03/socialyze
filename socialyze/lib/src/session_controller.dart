@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/services.dart';
@@ -27,42 +26,67 @@ extension on Protocol {
 // Default Key Bindings
 // ============================================================================
 
-/// Generates default numpad key bindings for three mice.
-/// Maps: Mouse A (7/4/1), Mouse B (8/5/2), Mouse C (9/6/3)
+/// Default per-mouse key columns, ordered as [empty, middle, stranger].
+///
+/// The first three mice use the numpad columns (7/4/1, 8/5/2, 9/6/3). Studies
+/// that score more than three mice fall back to letter columns so additional
+/// mice still get sensible, non-conflicting defaults; any of these can be
+/// remapped from the "Remap shortcuts" dialog.
+const List<List<LogicalKeyboardKey>> _defaultKeyColumns = [
+  [LogicalKeyboardKey.numpad7, LogicalKeyboardKey.numpad4, LogicalKeyboardKey.numpad1],
+  [LogicalKeyboardKey.numpad8, LogicalKeyboardKey.numpad5, LogicalKeyboardKey.numpad2],
+  [LogicalKeyboardKey.numpad9, LogicalKeyboardKey.numpad6, LogicalKeyboardKey.numpad3],
+  [LogicalKeyboardKey.keyR, LogicalKeyboardKey.keyF, LogicalKeyboardKey.keyV],
+  [LogicalKeyboardKey.keyT, LogicalKeyboardKey.keyG, LogicalKeyboardKey.keyB],
+  [LogicalKeyboardKey.keyY, LogicalKeyboardKey.keyH, LogicalKeyboardKey.keyN],
+];
+
+const List<Chamber> _defaultChamberOrder = [
+  Chamber.empty,
+  Chamber.middle,
+  Chamber.stranger,
+];
+
+/// Generates default key bindings for an arbitrary number of mice.
+///
+/// Mice beyond the predefined columns receive empty binding maps, which the
+/// user can fill in via the remap dialog.
 Map<String, Map<Chamber, LogicalKeyboardKey>> _generateDefaultKeyBindings(
   List<String> mouseIds,
 ) {
-  const keyGrid = <List<LogicalKeyboardKey>>[
-    [
-      LogicalKeyboardKey.numpad7,
-      LogicalKeyboardKey.numpad4,
-      LogicalKeyboardKey.numpad1,
-    ],
-    [
-      LogicalKeyboardKey.numpad8,
-      LogicalKeyboardKey.numpad5,
-      LogicalKeyboardKey.numpad2,
-    ],
-    [
-      LogicalKeyboardKey.numpad9,
-      LogicalKeyboardKey.numpad6,
-      LogicalKeyboardKey.numpad3,
-    ],
-  ];
-
-  const chamberOrder = [Chamber.empty, Chamber.middle, Chamber.stranger];
-
   final map = <String, Map<Chamber, LogicalKeyboardKey>>{};
   for (var mouseIndex = 0; mouseIndex < mouseIds.length; mouseIndex++) {
     final chambers = <Chamber, LogicalKeyboardKey>{};
-    for (var chamberIndex = 0;
-        chamberIndex < chamberOrder.length;
-        chamberIndex++) {
-      chambers[chamberOrder[chamberIndex]] = keyGrid[mouseIndex][chamberIndex];
+    if (mouseIndex < _defaultKeyColumns.length) {
+      final column = _defaultKeyColumns[mouseIndex];
+      for (var chamberIndex = 0;
+          chamberIndex < _defaultChamberOrder.length;
+          chamberIndex++) {
+        chambers[_defaultChamberOrder[chamberIndex]] = column[chamberIndex];
+      }
     }
     map[mouseIds[mouseIndex]] = chambers;
   }
   return map;
+}
+
+/// Public wrapper so the UI can regenerate default bindings for any roster of
+/// mice (e.g. after the count changes or "reset to defaults" is pressed).
+Map<String, Map<Chamber, LogicalKeyboardKey>> generateDefaultKeyBindings(
+  List<String> mouseIds,
+) =>
+    _generateDefaultKeyBindings(mouseIds);
+
+/// Default bindings for a single mouse at [mouseIndex] (used when adding mice).
+Map<Chamber, LogicalKeyboardKey> defaultBindingsForIndex(int mouseIndex) {
+  final chambers = <Chamber, LogicalKeyboardKey>{};
+  if (mouseIndex >= 0 && mouseIndex < _defaultKeyColumns.length) {
+    final column = _defaultKeyColumns[mouseIndex];
+    for (var i = 0; i < _defaultChamberOrder.length; i++) {
+      chambers[_defaultChamberOrder[i]] = column[i];
+    }
+  }
+  return chambers;
 }
 
 /// Outcome of attempting to log a chamber entry.
@@ -89,11 +113,18 @@ class SessionEvent {
     required this.mouseId,
     required this.chamber,
     required this.timestamp,
+    required this.position,
   });
 
   final String mouseId;
   final Chamber chamber;
+
+  /// Wall-clock time the key was pressed (kept for reference/debugging).
   final DateTime timestamp;
+
+  /// Position within the video when the event was logged. This is the basis
+  /// for all dwell-time analytics so results are independent of playback speed.
+  final Duration position;
 }
 
 // ============================================================================
@@ -122,6 +153,7 @@ class SessionState {
     List<SessionEvent>? events,
     this.videoPath,
     this.summary,
+    this.swapOuterChambers = false,
     Map<String, Map<Chamber, LogicalKeyboardKey>>? keyMap,
   })  : events =
             events == null ? const [] : List<SessionEvent>.unmodifiable(events),
@@ -134,6 +166,12 @@ class SessionState {
   final List<SessionEvent> events;
   final String? videoPath;
   final SessionSummary? summary;
+
+  /// When true, the two outer chambers are relabelled (Empty <-> Stranger) so
+  /// the UI matches a video whose chamber orientation is flipped. Purely a
+  /// display concern — the recorded chamber identities are unchanged.
+  final bool swapOuterChambers;
+
   final Map<String, Map<Chamber, LogicalKeyboardKey>> keyMap;
 
   SessionState copyWith({
@@ -145,6 +183,7 @@ class SessionState {
     Object? videoPath = _copySentinel,
     Object? summary = _copySentinel,
     bool clearSummary = false,
+    bool? swapOuterChambers,
     Map<String, Map<Chamber, LogicalKeyboardKey>>? keyMap,
   }) {
     return SessionState(
@@ -162,12 +201,21 @@ class SessionState {
           : summary == _copySentinel
               ? this.summary
               : summary as SessionSummary?,
+      swapOuterChambers: swapOuterChambers ?? this.swapOuterChambers,
       keyMap: keyMap ?? this.keyMap,
     );
   }
 }
 
 const _copySentinel = Object();
+
+/// Fixed reference instant used to convert a video [Duration] position into a
+/// [DateTime] so the existing [analyzeSession] logic (which operates on
+/// timestamps) can compute video-time dwell durations without modification.
+final DateTime _videoEpoch = DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+
+DateTime _positionToTimestamp(Duration position) =>
+    _videoEpoch.add(position.isNegative ? Duration.zero : position);
 
 /// Physical left-to-right ordering of the arena chambers.
 /// The middle chamber separates the two outer chambers, so a mouse can only
@@ -198,13 +246,32 @@ bool _isImpossibleTransition(Chamber from, Chamber to) {
 class SessionController extends StateNotifier<SessionState> {
   SessionController({
     Map<String, Map<Chamber, LogicalKeyboardKey>>? initialKeyMap,
+    bool initialSwapOuterChambers = false,
   }) : super(SessionState(
     protocol: Protocol.socialInteraction,
     keyMap: initialKeyMap,
+    swapOuterChambers: initialSwapOuterChambers,
   ));
+
+  /// Supplies the current playback position of the loaded video. Registered by
+  /// the video panel once a player exists. Events are timestamped with this so
+  /// dwell times reflect *video time* regardless of playback speed or pauses.
+  Duration Function()? _videoPositionProvider;
+
+  void setVideoPositionProvider(Duration Function()? provider) {
+    _videoPositionProvider = provider;
+  }
+
+  Duration get _currentVideoPosition =>
+      _videoPositionProvider?.call() ?? Duration.zero;
 
   void setProtocol(Protocol protocol) {
     state = state.copyWith(protocol: protocol);
+  }
+
+  void setSwapOuterChambers(bool value) {
+    state = state.copyWith(swapOuterChambers: value);
+    SettingsStore.setSwapOuterChambers(value);
   }
 
   void startSession() {
@@ -229,20 +296,26 @@ class SessionController extends StateNotifier<SessionState> {
     final stoppedAt = DateTime.now();
     SessionSummary? summary;
     if (state.events.isNotEmpty) {
-      final sessionEnd = stoppedAt.isBefore(state.events.last.timestamp)
-          ? state.events.last.timestamp
-          : stoppedAt;
+      // Analytics run on *video time*: each event's video position is mapped
+      // onto a fixed epoch so the analyzer's delta math yields durations that
+      // are independent of playback speed. The session ends at the latest of
+      // the current playback position or the last logged event.
+      final endPosition = state.events
+          .map((e) => e.position)
+          .fold<Duration>(_currentVideoPosition,
+              (max, p) => p > max ? p : max);
+
       summary = analyzeSession(
         state.events
             .map(
               (event) => ChamberEvent(
                 mouseId: event.mouseId,
                 chamber: event.chamber,
-                timestamp: event.timestamp,
+                timestamp: _positionToTimestamp(event.position),
               ),
             )
             .toList(),
-        sessionEnd: sessionEnd,
+        sessionEnd: _positionToTimestamp(endPosition),
       );
     }
 
@@ -283,6 +356,7 @@ class SessionController extends StateNotifier<SessionState> {
       mouseId: mouseId,
       chamber: chamber,
       timestamp: DateTime.now(),
+      position: _currentVideoPosition,
     );
     state = state.copyWith(
       events: <SessionEvent>[...state.events, event],
@@ -315,7 +389,10 @@ class SessionController extends StateNotifier<SessionState> {
     }
 
     try {
-      final csv = generateSessionCsv(summary);
+      final csv = generateSessionCsv(
+        summary,
+        swapOuterChambers: state.swapOuterChambers,
+      );
       final timestamp =
           DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
 
@@ -328,41 +405,6 @@ class SessionController extends StateNotifier<SessionState> {
       if (result != null) {
         final file = File(result);
         await file.writeAsString(csv);
-        return true;
-      }
-      return false;
-    } catch (e) {
-      return false;
-    }
-  }
-
-  /// Export session summary as Excel-compatible TSV file.
-  /// Exports session summary as Excel-compatible TSV file (.xlsx).
-  /// Uses tab-separated values which Excel can open directly.
-  /// Adds UTF-8 BOM to ensure Excel recognizes the encoding properly.
-  Future<bool> exportSummaryAsExcel() async {
-    final summary = state.summary;
-    if (summary == null) {
-      return false;
-    }
-
-    try {
-      final tsv = generateSessionExcel(summary);
-      final timestamp =
-          DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
-
-      final result = await FilePicker.platform.saveFile(
-        fileName: 'socialyze_summary_$timestamp.xlsx',
-        allowedExtensions: ['xlsx'],
-        type: FileType.custom,
-      );
-
-      if (result != null) {
-        final file = File(result);
-        // Write UTF-8 BOM to ensure Excel recognizes the encoding
-        await file.writeAsBytes(
-          [0xEF, 0xBB, 0xBF, ...utf8.encode(tsv)],
-        );
         return true;
       }
       return false;

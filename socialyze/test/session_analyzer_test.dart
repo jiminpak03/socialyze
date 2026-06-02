@@ -158,14 +158,41 @@ void main() {
       final csv = generateSessionCsv(summary);
 
       expect(csv, contains('Session Summary Report'));
-      expect(csv, contains('Session Start'));
-      expect(csv, contains('Session End'));
       expect(csv, contains('Total Duration'));
       expect(csv, contains('Mouse ID'));
       expect(csv, contains('Empty (s)'));
+      expect(csv, contains('Stranger (s)'));
       expect(csv, contains('A,')); // Mouse ID row
       expect(csv, contains('30.000')); // Empty dwell time
       expect(csv, contains('1')); // Switch count
+    });
+
+    test('swapOuterChambers relabels outer columns', () {
+      final start = DateTime(2024, 1, 1, 12);
+      final events = [
+        ChamberEvent(mouseId: 'A', chamber: Chamber.empty, timestamp: start),
+        ChamberEvent(
+          mouseId: 'A',
+          chamber: Chamber.middle,
+          timestamp: start.add(const Duration(seconds: 30)),
+        ),
+      ];
+
+      final summary = analyzeSession(
+        events,
+        sessionEnd: start.add(const Duration(seconds: 45)),
+      );
+
+      final csv = generateSessionCsv(summary, swapOuterChambers: true);
+
+      // Header order swaps so the Stranger column now leads.
+      expect(
+        csv,
+        contains('Mouse ID,Stranger (s),Middle (s),Empty (s)'),
+      );
+      // Values follow their relabelled columns: the leading Stranger column
+      // shows 0s (no stranger dwell) and the trailing Empty column shows 30s.
+      expect(csv, contains('A,0.000,15.000,30.000'));
     });
   });
 }
