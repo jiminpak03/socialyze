@@ -9,11 +9,11 @@
 * **Drag & drop video playback** (AVI, MP4, etc.) with speed control
 * **Keyboard shortcuts (numpad)** to log mouse chamber entries in real time
 * **Remappable key bindings** for recording — users can configure their own keys if they don’t have a numpad
-* **Multi-mouse support** (track up to 3 mice simultaneously)
+* **Multi-mouse support** (track 2–6 mice simultaneously)
 * **Automatic dwell time & switch count summaries**
 * **Movement validation** that blocks impossible chamber transitions (an outer chamber directly to the other without crossing the middle)
 * **Persistent settings** — theme, mouse names, and key bindings are saved between launches
-* **Export to CSV or Excel** for downstream analysis in Excel or R
+* **Export to CSV** for downstream analysis in Excel or R
 * **Local session history** persisted on disk to re-load past experiments
 
 ---
@@ -24,7 +24,7 @@
 * **media_kit** – efficient native video playback
 * **Local JSON storage** – lightweight on-disk persistence for session history and settings
 * **Riverpod** – state management
-* **CSV / Excel** – export summaries for external analysis
+* **CSV** – export summaries for external analysis
 
 ---
 
@@ -38,6 +38,23 @@ You **do not need to install Flutter** to use SociaLyze.
 4. Double-click the executable to launch SociaLyze.
 
 No installation or dependencies are required — just download, unzip, and run.
+
+### 🍎 First launch on macOS
+
+The macOS build is ad-hoc signed (not yet notarized through an Apple Developer
+account), so Gatekeeper blocks the normal double-click the **first** time you
+open a freshly downloaded copy. To get past it once:
+
+* **Right-click** (or Control-click) `socialyze.app` → **Open** → click **Open**
+  again in the dialog.
+
+macOS remembers your choice, so afterwards it launches normally with a
+double-click. Alternatively, you can clear the download-quarantine flag from
+Terminal:
+
+```bash
+xattr -dr com.apple.quarantine /path/to/socialyze.app
+```
 
 ---
 
