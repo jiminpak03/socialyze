@@ -515,11 +515,9 @@ class _VideoPanelState extends State<_VideoPanel> {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  // The video surface (and the underlying mpv render context)
-                  // is only mounted once a video has actually been opened.
-                  // Mounting it at startup forces mpv to create its render
-                  // context before any media is loaded, which aborts on some
-                  // macOS configurations.
+                  // The video surface is only mounted once a video has
+                  // actually been opened, so we don't create the mpv render
+                  // context until there is media to display.
                   if (videoPath != null)
                     Container(
                       color: Colors.black,

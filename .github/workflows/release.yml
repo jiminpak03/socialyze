@@ -53,10 +53,8 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: stable
-          # Pin to the version the app is developed/tested against. Newer
-          # stable Flutter (3.38+) is incompatible with the pinned
-          # media_kit_video 1.3.0 and aborts mpv's render-context creation
-          # on macOS. Keeping CI on the dev toolchain makes builds reproducible.
+          # Pin to the version the app is developed/tested against so release
+          # builds stay reproducible and match the locked media_kit toolchain.
           flutter-version: 3.35.5
 
       - name: Install Linux build dependencies
@@ -118,7 +116,13 @@ jobs:
           echo "Zipping: $APP_BUNDLE_NAME -> $DST"
 
           cd "$SRC"
-          zip -r "$DST" "$APP_BUNDLE_NAME"
+          # -y/--symlinks is REQUIRED: macOS .framework bundles contain a
+          # symlink (e.g. Mpv.framework/Mpv -> Versions/Current/Mpv). Without
+          # -y, zip follows the symlink and stores a second physical copy of
+          # the binary. dyld then loads libmpv twice, which corrupts mpv's
+          # global option/config-shadow state and aborts in
+          # m_config_cache_from_shadow during mpv_render_context_create.
+          zip -r -y "$DST" "$APP_BUNDLE_NAME"
           echo "ZIP created at: $DST"
 
 
@@ -134,7 +138,9 @@ jobs:
             exit 1
           fi
           echo "Zipping bundle/ -> $DST"
-          zip -r "$DST" "bundle"
+          # -y preserves symlinks (e.g. bundled .so version symlinks) so we
+          # never ship duplicate physical copies of a shared library.
+          zip -r -y "$DST" "bundle"
           echo "ZIP created at: $DST"
 
       # ---------- UPLOAD + ATTACH ----------
